@@ -134,13 +134,13 @@ T["get_trigger_characters"]["returns Japanese trigger characters"] = function()
   local triggers = source:get_trigger_characters()
   expect.equality(type(triggers), "table")
   -- Should have ~174 characters (hiragana + katakana)
-  expect.truthy(#triggers >= 170 and #triggers <= 180)
+  expect.equality(#triggers >= 170 and #triggers <= 180, true)
   -- Should include hiragana
-  expect.truthy(vim.tbl_contains(triggers, "あ"))
-  expect.truthy(vim.tbl_contains(triggers, "ん"))
+  expect.equality(vim.tbl_contains(triggers, "あ"), true)
+  expect.equality(vim.tbl_contains(triggers, "ん"), true)
   -- Should include katakana
-  expect.truthy(vim.tbl_contains(triggers, "ア"))
-  expect.truthy(vim.tbl_contains(triggers, "ン"))
+  expect.equality(vim.tbl_contains(triggers, "ア"), true)
+  expect.equality(vim.tbl_contains(triggers, "ン"), true)
 end
 
 T["get_trigger_characters"]["caches trigger characters"] = function()

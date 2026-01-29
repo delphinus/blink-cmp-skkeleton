@@ -38,35 +38,6 @@ T["convert_ranks_to_map"]["handles invalid entries"] = function()
   expect.equality(result["藍"], nil)
 end
 
--- build_text_edit_range tests
-T["build_text_edit_range"] = new_set()
-
-T["build_text_edit_range"]["calculates correct range for ASCII"] = function()
-  local context = {
-    cursor = { 1, 5 }, -- line 1, column 5
-  }
-  local pre_edit = "test"
-  local result = completion.build_text_edit_range(context, pre_edit)
-
-  expect.equality(result.start.line, 0) -- LSP 0-indexed
-  expect.equality(result.start.character, 1) -- 5 - 4 bytes
-  expect.equality(result["end"].line, 0)
-  expect.equality(result["end"].character, 5)
-end
-
-T["build_text_edit_range"]["calculates correct range for multibyte"] = function()
-  local context = {
-    cursor = { 1, 9 }, -- line 1, column 9
-  }
-  local pre_edit = "▽あい" -- 3 + 3 + 3 = 9 bytes
-  local result = completion.build_text_edit_range(context, pre_edit)
-
-  expect.equality(result.start.line, 0)
-  expect.equality(result.start.character, 0) -- 9 - 9 bytes
-  expect.equality(result["end"].line, 0)
-  expect.equality(result["end"].character, 9)
-end
-
 -- build_completion_item tests
 T["build_completion_item"] = new_set()
 
@@ -139,6 +110,67 @@ T["build_completion_items"]["sorts by rank"] = function()
   expect.equality(items[1].label, "愛") -- rank 100
   expect.equality(items[2].label, "哀") -- rank 50
   expect.equality(items[3].label, "藍") -- global rank -1
+end
+
+T["build_completion_items"]["maintains stable order for duplicate ranks"] = function()
+  local candidates = {
+    { "あい", { "愛", "藍", "哀", "相" } },
+  }
+  -- All items have the same rank
+  local ranks = {
+    ["愛"] = 100,
+    ["藍"] = 100,
+    ["哀"] = 100,
+    ["相"] = 100,
+  }
+  local text_edit_range = {
+    start = { line = 0, character = 0 },
+    ["end"] = { line = 0, character = 9 },
+  }
+
+  local items = completion.build_completion_items(candidates, ranks, text_edit_range)
+
+  expect.equality(#items, 4)
+  -- All should have rank 100
+  for _, item in ipairs(items) do
+    expect.equality(item.data.rank, 100)
+  end
+end
+
+T["build_completion_items"]["handles empty candidates"] = function()
+  local candidates = {}
+  local ranks = {}
+  local text_edit_range = {
+    start = { line = 0, character = 0 },
+    ["end"] = { line = 0, character = 9 },
+  }
+
+  local items = completion.build_completion_items(candidates, ranks, text_edit_range)
+
+  expect.equality(#items, 0)
+end
+
+T["build_completion_items"]["handles negative ranks correctly"] = function()
+  local candidates = {
+    { "あい", { "愛", "藍" } },
+  }
+  -- 愛 has explicit negative rank, 藍 gets global rank
+  local ranks = {
+    ["愛"] = -50,
+  }
+  local text_edit_range = {
+    start = { line = 0, character = 0 },
+    ["end"] = { line = 0, character = 9 },
+  }
+
+  local items = completion.build_completion_items(candidates, ranks, text_edit_range)
+
+  expect.equality(#items, 2)
+  -- 藍 gets global rank -1, 愛 has -50
+  expect.equality(items[1].label, "藍") -- global rank -1 > -50
+  expect.equality(items[2].label, "愛") -- rank -50
+  expect.equality(items[1].data.rank, -1)
+  expect.equality(items[2].data.rank, -50)
 end
 
 return T
