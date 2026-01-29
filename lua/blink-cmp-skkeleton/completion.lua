@@ -18,35 +18,6 @@ function M.convert_ranks_to_map(ranks_array)
   return ranks
 end
 
---- Build text edit range for pre-edit replacement
---- @param context blink.cmp.Context
---- @param pre_edit string
---- @return table LSP TextEdit range
-function M.build_text_edit_range(context, pre_edit)
-  local cursor_line = context.cursor[1]
-  local cursor_col = context.cursor[2]
-
-  -- IMPORTANT: pre_edit_len is CHARACTER count, but cursor_col is BYTE position
-  -- We need to use the actual byte length of pre_edit string
-  local pre_edit_byte_len = #pre_edit
-  local start_col = cursor_col - pre_edit_byte_len
-
-  local range = {
-    start = {
-      line = cursor_line - 1, -- LSP uses 0-indexed lines
-      character = start_col,
-    },
-    ["end"] = {
-      line = cursor_line - 1,
-      character = cursor_col,
-    },
-  }
-
-  -- Removed verbose debug log
-
-  return range
-end
-
 --- Build a single completion item
 --- @param kana string
 --- @param word string

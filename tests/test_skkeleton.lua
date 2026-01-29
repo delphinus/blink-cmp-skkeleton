@@ -102,6 +102,7 @@ T["get_completion_data"]["returns completion data"] = function()
 end
 
 T["get_completion_data"]["returns empty data on error"] = function()
+  skkeleton.clear_cache()
   local old_fn = vim.fn
   vim.fn = setmetatable({}, {
     __index = function(t, k)
@@ -129,6 +130,7 @@ end
 T["get_completion_data cache"] = new_set()
 
 T["get_completion_data cache"]["caches result for same pre_edit"] = function()
+  skkeleton.clear_cache()
   local old_fn = vim.fn
   local denops_call_count = 0
 
@@ -416,6 +418,118 @@ T["cache metrics"]["calculates hit rate correctly"] = function()
   expect.equality(stats.hit_rate >= 74 and stats.hit_rate <= 76, true) -- Allow for floating point
 
   vim.fn = old_fn
+  skkeleton.clear_cache()
+end
+
+-- TTL boundary tests (uses default 100ms TTL)
+T["cache TTL boundary"] = new_set()
+
+T["cache TTL boundary"]["invalidates at exact TTL boundary"] = function()
+  local old_fn = vim.fn
+  local old_loop = vim.loop
+
+  -- Uses default TTL of 100ms (set at module load time)
+  local current_time = 0
+  vim.loop = {
+    now = function()
+      return current_time
+    end,
+  }
+
+  local denops_call_count = 0
+  vim.fn = setmetatable({}, {
+    __index = function(t, k)
+      if k == "denops#request" then
+        return function(plugin, method, args)
+          denops_call_count = denops_call_count + 1
+          if method == "getPreEdit" then
+            return "▽あい"
+          elseif method == "getCompletionResult" then
+            return { { "あい", { "愛" } } }
+          elseif method == "getRanks" then
+            return {}
+          end
+        end
+      end
+      return old_fn[k]
+    end,
+  })
+
+  -- First call at t=0 (cache miss)
+  current_time = 0
+  skkeleton.clear_cache()
+  denops_call_count = 0
+  skkeleton.get_completion_data()
+  expect.equality(denops_call_count, 3) -- miss: getPreEdit + getCompletionResult + getRanks
+
+  -- At t=99 (just before 100ms TTL) - should be cache hit
+  current_time = 99
+  denops_call_count = 0
+  skkeleton.get_completion_data()
+  expect.equality(denops_call_count, 1) -- hit: only getPreEdit
+
+  -- At t=100 (exactly at 100ms TTL) - should be cache miss
+  current_time = 100
+  denops_call_count = 0
+  skkeleton.get_completion_data()
+  expect.equality(denops_call_count, 3) -- miss: full fetch
+
+  vim.fn = old_fn
+  vim.loop = old_loop
+  skkeleton.clear_cache()
+end
+
+T["cache TTL boundary"]["just before TTL is cache hit"] = function()
+  local old_fn = vim.fn
+  local old_loop = vim.loop
+
+  local current_time = 0
+  vim.loop = {
+    now = function()
+      return current_time
+    end,
+  }
+
+  local denops_call_count = 0
+  vim.fn = setmetatable({}, {
+    __index = function(t, k)
+      if k == "denops#request" then
+        return function(plugin, method, args)
+          denops_call_count = denops_call_count + 1
+          if method == "getPreEdit" then
+            return "▽あい"
+          elseif method == "getCompletionResult" then
+            return { { "あい", { "愛" } } }
+          elseif method == "getRanks" then
+            return {}
+          end
+        end
+      end
+      return old_fn[k]
+    end,
+  })
+
+  -- First call at t=0 (cache miss)
+  current_time = 0
+  skkeleton.clear_cache()
+  denops_call_count = 0
+  skkeleton.get_completion_data()
+  expect.equality(denops_call_count, 3) -- miss
+
+  -- At t=50 (half of 100ms TTL) - should be cache hit
+  current_time = 50
+  denops_call_count = 0
+  skkeleton.get_completion_data()
+  expect.equality(denops_call_count, 1) -- hit
+
+  -- At t=99 (1ms before TTL) - should still be cache hit
+  current_time = 99
+  denops_call_count = 0
+  skkeleton.get_completion_data()
+  expect.equality(denops_call_count, 1) -- hit
+
+  vim.fn = old_fn
+  vim.loop = old_loop
   skkeleton.clear_cache()
 end
 
