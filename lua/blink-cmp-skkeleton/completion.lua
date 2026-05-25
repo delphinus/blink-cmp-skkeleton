@@ -85,7 +85,14 @@ function M.build_completion_items(candidates, ranks, text_edit_range, filter_tex
       end
 
       local item = M.build_completion_item(kana, word, rank, text_edit_range, filter_text)
-      table.insert(items, item)
+      -- アノテーション専用エントリ (word が ";comment" のような形式) は
+      -- parse_word 後に label が "" になる。空 label を blink.cmp に渡すと
+      -- frizbee の SIMD matcher が空 haystack で panic する
+      -- (saghen/frizbee#64, saghen/frizbee#77 参照)。挿入する文字列も無いので
+      -- 候補として元々無意味であり、ここで弾く。
+      if item.label ~= "" then
+        table.insert(items, item)
+      end
     end
   end
 
