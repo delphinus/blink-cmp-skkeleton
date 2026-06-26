@@ -55,8 +55,13 @@ end
 --- @param callback fun(response: { is_incomplete_forward: boolean, is_incomplete_backward: boolean, items: blink.cmp.CompletionItem[] })
 --- @return function cancel function
 function source:get_completions(context, callback)
-  -- Cancel function (no-op for now since we don't have async operations)
-  local cancel_fun = function() end
+  -- blink.cmp may cancel an in-flight request when the user keeps typing. We
+  -- can't abort the denops RPC itself, but we flip this flag so a late response
+  -- is discarded instead of clobbering a newer one.
+  local cancelled = false
+  local function cancel_fun()
+    cancelled = true
+  end
 
   -- Debug: Log basic information
   utils.debug_log(
@@ -79,32 +84,33 @@ function source:get_completions(context, callback)
     return cancel_fun
   end
 
-  -- Get completion data from skkeleton via denops
-  local candidates, ranks_array, pre_edit = skkeleton.get_completion_data()
+  -- Fetch completion data asynchronously so a slow skkserv never freezes the
+  -- editor. The result is delivered through the callback below.
+  skkeleton.get_completion_data_async(function(candidates, ranks_array, pre_edit)
+    if cancelled then
+      return
+    end
 
-  -- Convert ranks and build items
-  local ranks = completion.convert_ranks_to_map(ranks_array)
+    vim.schedule(function()
+      if cancelled then
+        return
+      end
 
-  -- Compute text_edit_range using context module
-  local text_edit_range = context_module.compute_text_edit_range(context, pre_edit)
+      local ranks = completion.convert_ranks_to_map(ranks_array)
+      local text_edit_range = context_module.compute_text_edit_range(context, pre_edit)
+      local filter_text = context_module.extract_filter_text(context, pre_edit)
+      local items = completion.build_completion_items(candidates, ranks, text_edit_range, filter_text)
 
-  -- Extract filterText using context module
-  local filter_text = context_module.extract_filter_text(context, pre_edit)
+      utils.debug_log(string.format("Returning %d items for pre_edit='%s'", #items, pre_edit))
 
-  local items = completion.build_completion_items(candidates, ranks, text_edit_range, filter_text)
-
-  utils.debug_log(string.format("Returning %d items for pre_edit='%s'", #items, pre_edit))
-
-  -- Wrap callback in vim.schedule_wrap
-  local wrapped_callback = vim.schedule_wrap(function()
-    callback({
-      is_incomplete_forward = true, -- Tell blink.cmp not to filter
-      is_incomplete_backward = true,
-      items = items,
-    })
+      callback({
+        is_incomplete_forward = true, -- Tell blink.cmp not to filter
+        is_incomplete_backward = true,
+        items = items,
+      })
+    end)
   end)
 
-  wrapped_callback()
   return cancel_fun
 end
 

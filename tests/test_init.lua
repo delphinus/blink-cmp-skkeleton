@@ -185,6 +185,7 @@ T["get_completions"]["returns empty when skkeleton is disabled"] = function()
 end
 
 T["get_completions"]["builds completion items correctly"] = function()
+  require("blink-cmp-skkeleton.skkeleton").clear_cache()
   local source = new_source()
   local old_fn = vim.fn
   vim.fn = setmetatable({}, {
@@ -194,14 +195,14 @@ T["get_completions"]["builds completion items correctly"] = function()
           return 1
         end
       end
-      if k == "denops#request" then
-        return function(plugin, method, args)
+      if k == "denops#request_async" then
+        return function(plugin, method, args, success, _failure)
           if method == "getCompletionResult" then
-            return { { "あい", { "愛", "藍;indigo" } } }
+            success({ { "あい", { "愛", "藍;indigo" } } })
           elseif method == "getRanks" then
-            return { { "愛", 100 } }
+            success({ { "愛", 100 } })
           elseif method == "getPreEdit" then
-            return "▽あい"
+            success("▽あい")
           end
         end
       end
@@ -209,10 +210,20 @@ T["get_completions"]["builds completion items correctly"] = function()
     end,
   })
 
+  -- extract_filter_text slices the live buffer line using context.bounds, so
+  -- populate the buffer to exercise the real path (filterText == reading
+  -- without the ▽ marker). "▽あい" is 9 bytes; "あい" starts at byte 4.
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "▽あい" })
+  vim.api.nvim_win_set_cursor(0, { 1, 9 })
+
   local callback_called = false
   local items = nil
 
-  source:get_completions({ cursor = { 1, 9 }, line = "▽あい" }, function(response)
+  source:get_completions({
+    cursor = { 1, 9 },
+    line = "▽あい",
+    bounds = { start_col = 4, length = 6 },
+  }, function(response)
     callback_called = true
     items = response.items
   end)
@@ -226,7 +237,9 @@ T["get_completions"]["builds completion items correctly"] = function()
   expect.equality(items[2].label, "藍")
   expect.no_equality(items[2].documentation, nil)
 
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "" })
   vim.fn = old_fn
+  require("blink-cmp-skkeleton.skkeleton").clear_cache()
 end
 
 -- resolve tests
