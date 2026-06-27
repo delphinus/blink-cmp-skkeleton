@@ -203,6 +203,8 @@ T["get_completions"]["builds completion items correctly"] = function()
             success({ { "愛", 100 } })
           elseif method == "getPreEdit" then
             success("▽あい")
+          elseif method == "getPrefix" then
+            success("あい")
           end
         end
       end

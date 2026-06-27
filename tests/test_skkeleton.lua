@@ -538,6 +538,9 @@ T["get_completion_data_async"] = new_set()
 
 --- Build a vim.fn mock whose denops#request_async resolves each method via the
 --- success callback. `counter` (optional) is incremented per async RPC.
+--- When `responses.getPrefix` is omitted it defaults to the getPreEdit value
+--- with the leading ▽ marker stripped (= the henkanFeed), so existing fixtures
+--- keep working with the prefix-anchored async flow.
 local function mock_async(old_fn, responses, counter)
   return setmetatable({}, {
     __index = function(_, k)
@@ -546,7 +549,11 @@ local function mock_async(old_fn, responses, counter)
           if counter then
             counter.count = counter.count + 1
           end
-          success(responses[method])
+          local value = responses[method]
+          if method == "getPrefix" and value == nil then
+            value = (responses.getPreEdit or ""):gsub("^▽", "")
+          end
+          success(value)
         end
       end
       return old_fn[k]
@@ -585,7 +592,9 @@ T["get_completion_data_async"]["returns empty data on failure"] = function()
     __index = function(_, k)
       if k == "denops#request_async" then
         return function(_plugin, method, _args, success, failure)
-          if method == "getPreEdit" then
+          if method == "getPrefix" then
+            success("あい")
+          elseif method == "getPreEdit" then
             success("▽あい")
           else
             -- getCompletionResult fails
@@ -621,15 +630,107 @@ T["get_completion_data_async"]["caches result for same pre_edit"] = function()
     getRanks = { { "愛", 100 } },
   }, counter)
 
-  -- First call: cache miss (getPreEdit + getCompletionResult + getRanks)
+  -- First call: cache miss
+  -- (getPrefix + getPreEdit + getCompletionResult + getRanks)
   counter.count = 0
   skkeleton.get_completion_data_async(function() end)
-  expect.equality(counter.count, 3)
+  expect.equality(counter.count, 4)
 
-  -- Second call: cache hit (only getPreEdit to check the key)
+  -- Second call: cache hit (getPrefix + getPreEdit to check the key)
   counter.count = 0
   skkeleton.get_completion_data_async(function() end)
-  expect.equality(counter.count, 1)
+  expect.equality(counter.count, 2)
+
+  vim.fn = old_fn
+  skkeleton.clear_cache()
+end
+
+T["get_completion_data_async"]["drops candidates whose midashi does not match the prefix"] = function()
+  skkeleton.clear_cache()
+  local old_fn = vim.fn
+  vim.fn = mock_async(old_fn, {
+    getPrefix = "あい",
+    getPreEdit = "▽あい",
+    -- "じぇい" は prefix "あい" に前方一致しないので除去される
+    getCompletionResult = { { "あい", { "愛" } }, { "じぇい", { "J POINTS" } } },
+    getRanks = { { "愛", 100 } },
+  })
+
+  local result
+  skkeleton.get_completion_data_async(function(candidates, ranks_array, pre_edit)
+    result = { candidates = candidates, ranks_array = ranks_array, pre_edit = pre_edit }
+  end)
+
+  expect.no_equality(result, nil)
+  expect.equality(#result.candidates, 1)
+  expect.equality(result.candidates[1][1], "あい")
+  expect.equality(result.pre_edit, "▽あい")
+
+  vim.fn = old_fn
+  skkeleton.clear_cache()
+end
+
+T["get_completion_data_async"]["returns empty when not in input state"] = function()
+  skkeleton.clear_cache()
+  local old_fn = vim.fn
+  local completion_called = false
+  vim.fn = setmetatable({}, {
+    __index = function(_, k)
+      if k == "denops#request_async" then
+        return function(_plugin, method, _args, success, _failure)
+          if method == "getPrefix" then
+            success("")
+          elseif method == "getCompletionResult" then
+            completion_called = true
+            success({})
+          else
+            success(nil)
+          end
+        end
+      end
+      return old_fn[k]
+    end,
+  })
+
+  local result
+  skkeleton.get_completion_data_async(function(candidates, ranks_array, pre_edit)
+    result = { candidates = candidates, ranks_array = ranks_array, pre_edit = pre_edit }
+  end)
+
+  expect.no_equality(result, nil)
+  expect.equality(#result.candidates, 0)
+  expect.equality(result.pre_edit, "")
+  -- empty prefix short-circuits before fetching candidates
+  expect.equality(completion_called, false)
+
+  vim.fn = old_fn
+  skkeleton.clear_cache()
+end
+
+T["get_completion_data_async"]["bails out and skips fetching when cancelled"] = function()
+  skkeleton.clear_cache()
+  local old_fn = vim.fn
+  local counter = { count = 0 }
+  vim.fn = mock_async(old_fn, {
+    getPrefix = "あい",
+    getPreEdit = "▽あい",
+    getCompletionResult = { { "あい", { "愛" } } },
+    getRanks = { { "愛", 100 } },
+  }, counter)
+
+  local result
+  counter.count = 0
+  skkeleton.get_completion_data_async(function(candidates, ranks_array, pre_edit)
+    result = { candidates = candidates, ranks_array = ranks_array, pre_edit = pre_edit }
+  end, function()
+    return true
+  end)
+
+  expect.no_equality(result, nil)
+  expect.equality(#result.candidates, 0)
+  expect.equality(result.pre_edit, "")
+  -- cancelled before the first RPC: the chain never issues a request
+  expect.equality(counter.count, 0)
 
   vim.fn = old_fn
   skkeleton.clear_cache()

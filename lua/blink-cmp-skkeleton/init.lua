@@ -85,7 +85,9 @@ function source:get_completions(context, callback)
   end
 
   -- Fetch completion data asynchronously so a slow skkserv never freezes the
-  -- editor. The result is delivered through the callback below.
+  -- editor. The result is delivered through the callback below. The
+  -- `should_cancel` predicate lets the RPC chain abort early (and skip caching)
+  -- once blink.cmp has superseded this request.
   skkeleton.get_completion_data_async(function(candidates, ranks_array, pre_edit)
     if cancelled then
       return
@@ -109,6 +111,8 @@ function source:get_completions(context, callback)
         items = items,
       })
     end)
+  end, function()
+    return cancelled
   end)
 
   return cancel_fun

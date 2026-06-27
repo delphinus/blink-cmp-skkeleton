@@ -94,6 +94,28 @@ local function lookup_cache(pre_edit, cursor_line, cursor_col)
   return cached_data
 end
 
+--- Drop candidates whose midashi (kana) does not start with `prefix`.
+--- skkserv completion ("1<prefix> ") only ever returns midashis that begin with
+--- the prefix, so a candidate that fails this check came from a stale skkeleton
+--- state and must not be shown. UTF-8 byte-prefix matching coincides with
+--- character-prefix matching, so a plain `sub` comparison is correct.
+--- @param candidates any[]
+--- @param prefix string
+--- @return any[]
+local function filter_candidates_by_prefix(candidates, prefix)
+  if prefix == "" then
+    return candidates
+  end
+  local filtered = {}
+  for _, cand in ipairs(candidates) do
+    local kana = cand[1]
+    if type(kana) == "string" and kana:sub(1, #prefix) == prefix then
+      table.insert(filtered, cand)
+    end
+  end
+  return filtered
+end
+
 --- Store freshly fetched completion data in the cache.
 --- @param pre_edit string
 --- @param candidates any[]
@@ -153,39 +175,91 @@ function M.get_completion_data()
 end
 
 --- Get completion data from skkeleton without blocking the UI.
---- Issues the getPreEdit / getCompletionResult / getRanks RPCs via
---- denops#request_async and invokes `callback` once the data is ready. The
---- same caching strategy as the synchronous variant is applied.
+---
+--- Because the RPCs are no longer atomic (the user can keep typing between each
+--- async round-trip), the reading and the candidates could otherwise be read
+--- from different skkeleton states and end up mismatched. Two guards keep them
+--- consistent: getPrefix (= state.henkanFeed, the exact key candidates are
+--- generated from) is read first, and candidates whose midashi does not start
+--- with that prefix are dropped, so candidates from an unrelated reading never
+--- surface. An empty prefix means skkeleton is not in input state, so we return
+--- empty instead of falling back to the buffer. A `should_cancel` predicate lets
+--- a superseded request bail out without polluting the (single-slot) cache.
 --- @param callback fun(candidates: table, ranks_array: table, pre_edit: string)
-function M.get_completion_data_async(callback)
+--- @param should_cancel? fun(): boolean returns true when the request is stale
+function M.get_completion_data_async(callback, should_cancel)
+  should_cancel = should_cancel or function()
+    return false
+  end
+
   local cursor_pos = vim.api.nvim_win_get_cursor(0)
   local cursor_line = cursor_pos[1]
   local cursor_col = cursor_pos[2]
 
-  request_async("getPreEdit", function(raw_pre_edit)
-    local pre_edit = normalize_pre_edit(raw_pre_edit)
+  -- Deliver an empty result without touching the cache.
+  local function bail()
+    callback({}, {}, "")
+  end
 
-    local cached_data = lookup_cache(pre_edit, cursor_line, cursor_col)
-    if cached_data then
-      callback(cached_data.candidates, cached_data.ranks, cached_data.pre_edit)
-      return
+  if should_cancel() then
+    return bail()
+  end
+
+  request_async("getPrefix", function(raw_prefix)
+    local prefix = raw_prefix or ""
+    -- Empty prefix means skkeleton is not in input state, so there can be no
+    -- candidates. Return empty instead of falling back to extracting pre_edit
+    -- from the buffer, which would mix a buffer-derived reading with live-state
+    -- candidates.
+    if prefix == "" or should_cancel() then
+      return bail()
     end
 
-    utils.debug_log(string.format("Cache MISS for '%s', fetching (async)...", pre_edit))
-    request_async("getCompletionResult", function(raw_candidates)
-      local candidates = raw_candidates or {}
-      request_async("getRanks", function(raw_ranks)
-        local ranks_array = raw_ranks or {}
-        store_cache(pre_edit, candidates, ranks_array, cursor_line, cursor_col)
-        utils.debug_log(string.format("pre_edit='%s', candidates=%d", pre_edit, #candidates))
-        callback(candidates, ranks_array, pre_edit)
+    request_async("getPreEdit", function(raw_pre_edit)
+      if should_cancel() then
+        return bail()
+      end
+      -- Use the raw pre_edit (no buffer fallback): with a non-empty prefix,
+      -- toString() is guaranteed non-empty ("▽…").
+      local pre_edit = raw_pre_edit or ""
+
+      local cached_data = lookup_cache(pre_edit, cursor_line, cursor_col)
+      if cached_data then
+        callback(cached_data.candidates, cached_data.ranks, cached_data.pre_edit)
+        return
+      end
+
+      -- Filter against the prefix, then store and deliver the result.
+      local function finalize(candidates, ranks_array)
+        local filtered = filter_candidates_by_prefix(candidates, prefix)
+        store_cache(pre_edit, filtered, ranks_array, cursor_line, cursor_col)
+        utils.debug_log(string.format("pre_edit='%s', candidates=%d", pre_edit, #filtered))
+        callback(filtered, ranks_array, pre_edit)
+      end
+
+      utils.debug_log(string.format("Cache MISS for '%s', fetching (async)...", pre_edit))
+      request_async("getCompletionResult", function(raw_candidates)
+        if should_cancel() then
+          return bail()
+        end
+        local candidates = raw_candidates or {}
+        request_async("getRanks", function(raw_ranks)
+          if should_cancel() then
+            return bail()
+          end
+          finalize(candidates, raw_ranks or {})
+        end, function()
+          -- getRanks failed: still surface candidates with empty ranks.
+          if should_cancel() then
+            return bail()
+          end
+          finalize(candidates, {})
+        end)
       end, function()
-        -- getRanks failed: still surface candidates with empty ranks
-        store_cache(pre_edit, candidates, {}, cursor_line, cursor_col)
-        callback(candidates, {}, pre_edit)
+        callback({}, {}, pre_edit)
       end)
     end, function()
-      callback({}, {}, pre_edit)
+      callback({}, {}, "")
     end)
   end, function()
     callback({}, {}, "")
