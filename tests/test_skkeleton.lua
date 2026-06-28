@@ -631,10 +631,10 @@ T["get_completion_data_async"]["caches result for same pre_edit"] = function()
   }, counter)
 
   -- First call: cache miss
-  -- (getPrefix + getPreEdit + getCompletionResult + getRanks)
+  -- (getPrefix + getPreEdit + getCompletionResult + getRanks + getPrefix re-check)
   counter.count = 0
   skkeleton.get_completion_data_async(function() end)
-  expect.equality(counter.count, 4)
+  expect.equality(counter.count, 5)
 
   -- Second call: cache hit (getPrefix + getPreEdit to check the key)
   counter.count = 0
@@ -665,6 +665,50 @@ T["get_completion_data_async"]["drops candidates whose midashi does not match th
   expect.equality(#result.candidates, 1)
   expect.equality(result.candidates[1][1], "あい")
   expect.equality(result.pre_edit, "▽あい")
+
+  vim.fn = old_fn
+  skkeleton.clear_cache()
+end
+
+T["get_completion_data_async"]["discards result when prefix changes mid-fetch"] = function()
+  skkeleton.clear_cache()
+  local old_fn = vim.fn
+  -- getPrefix is read twice: once up front, once after candidates/ranks. Return
+  -- a different henkanFeed the second time to simulate a keystroke landing
+  -- mid-fetch. The reading/candidates are then from inconsistent states and the
+  -- whole result must be dropped.
+  local prefix_calls = 0
+  vim.fn = setmetatable({}, {
+    __index = function(_, k)
+      if k == "denops#request_async" then
+        return function(_plugin, method, _args, success, _failure)
+          if method == "getPrefix" then
+            prefix_calls = prefix_calls + 1
+            success(prefix_calls == 1 and "あい" or "あいう")
+          elseif method == "getPreEdit" then
+            success("▽あい")
+          elseif method == "getCompletionResult" then
+            success({ { "あい", { "愛" } } })
+          elseif method == "getRanks" then
+            success({ { "愛", 100 } })
+          else
+            success(nil)
+          end
+        end
+      end
+      return old_fn[k]
+    end,
+  })
+
+  local result
+  skkeleton.get_completion_data_async(function(candidates, ranks_array, pre_edit)
+    result = { candidates = candidates, ranks_array = ranks_array, pre_edit = pre_edit }
+  end)
+
+  expect.no_equality(result, nil)
+  expect.equality(#result.candidates, 0)
+  expect.equality(result.pre_edit, "")
+  expect.equality(prefix_calls, 2)
 
   vim.fn = old_fn
   skkeleton.clear_cache()

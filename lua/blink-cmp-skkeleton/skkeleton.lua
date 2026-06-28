@@ -178,13 +178,25 @@ end
 ---
 --- Because the RPCs are no longer atomic (the user can keep typing between each
 --- async round-trip), the reading and the candidates could otherwise be read
---- from different skkeleton states and end up mismatched. Two guards keep them
---- consistent: getPrefix (= state.henkanFeed, the exact key candidates are
---- generated from) is read first, and candidates whose midashi does not start
---- with that prefix are dropped, so candidates from an unrelated reading never
---- surface. An empty prefix means skkeleton is not in input state, so we return
---- empty instead of falling back to the buffer. A `should_cancel` predicate lets
---- a superseded request bail out without polluting the (single-slot) cache.
+--- from different skkeleton states and end up mismatched. Three guards keep them
+--- consistent:
+---  1. getPrefix (= state.henkanFeed, the exact key candidates are generated
+---     from) is read first, and candidates whose midashi does not start with
+---     that prefix are dropped, so candidates from an unrelated reading never
+---     surface.
+---  2. getPrefix is read AGAIN after the candidates and ranks have been
+---     fetched. If state.henkanFeed changed at any point during the fetch, the
+---     reading (getPreEdit), candidates and ranks may each have been read from a
+---     different state -- the whole result is discarded. This is what stops the
+---     candidate/reading mismatch the per-candidate filter cannot: the filter
+---     only ties candidates to the prefix, not the prefix to the displayed
+---     pre_edit, so without this bracket a keystroke landing between getPrefix
+---     and getPreEdit would surface (filter-passing) candidates under an
+---     unrelated reading.
+---  3. An empty prefix means skkeleton is not in input state, so we return empty
+---     instead of falling back to the buffer.
+--- A `should_cancel` predicate lets a superseded request bail out without
+--- polluting the (single-slot) cache.
 --- @param callback fun(candidates: table, ranks_array: table, pre_edit: string)
 --- @param should_cancel? fun(): boolean returns true when the request is stale
 function M.get_completion_data_async(callback, should_cancel)
@@ -229,12 +241,27 @@ function M.get_completion_data_async(callback, should_cancel)
         return
       end
 
-      -- Filter against the prefix, then store and deliver the result.
+      -- Re-read the prefix once everything has been fetched. If it no longer
+      -- matches the prefix we started from, skkeleton's henkanFeed changed
+      -- mid-fetch, so pre_edit / candidates / ranks may be from different states
+      -- and must not be shown together. Only on a stable prefix do we filter,
+      -- cache and deliver.
       local function finalize(candidates, ranks_array)
-        local filtered = filter_candidates_by_prefix(candidates, prefix)
-        store_cache(pre_edit, filtered, ranks_array, cursor_line, cursor_col)
-        utils.debug_log(string.format("pre_edit='%s', candidates=%d", pre_edit, #filtered))
-        callback(filtered, ranks_array, pre_edit)
+        request_async("getPrefix", function(raw_prefix2)
+          if should_cancel() then
+            return bail()
+          end
+          if (raw_prefix2 or "") ~= prefix then
+            utils.debug_log(
+              string.format("Prefix changed mid-fetch ('%s' -> '%s'), discarding", prefix, raw_prefix2 or "")
+            )
+            return bail()
+          end
+          local filtered = filter_candidates_by_prefix(candidates, prefix)
+          store_cache(pre_edit, filtered, ranks_array, cursor_line, cursor_col)
+          utils.debug_log(string.format("pre_edit='%s', candidates=%d", pre_edit, #filtered))
+          callback(filtered, ranks_array, pre_edit)
+        end, bail)
       end
 
       utils.debug_log(string.format("Cache MISS for '%s', fetching (async)...", pre_edit))
