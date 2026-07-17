@@ -3,7 +3,6 @@
 
 local utils = require("blink-cmp-skkeleton.utils")
 local cache_module = require("blink-cmp-skkeleton.cache")
-local context_module = require("blink-cmp-skkeleton.context")
 
 local M = {}
 
@@ -37,22 +36,6 @@ local function request_async(key, on_success, on_failure)
   if not ok and on_failure then
     on_failure(nil)
   end
-end
-
---- Resolve pre_edit, falling back to extracting it from the current line when
---- skkeleton reports an empty value. Shared by the sync and async fetchers.
---- @param raw string|nil value returned by getPreEdit
---- @return string
-local function normalize_pre_edit(raw)
-  local pre_edit = raw or ""
-  if pre_edit == "" then
-    local extracted = context_module.extract_pre_edit_from_line()
-    if extracted then
-      pre_edit = extracted
-      utils.debug_log(string.format("Extracted pre_edit: '%s'", pre_edit))
-    end
-  end
-  return pre_edit
 end
 
 --- Look up cached completion data for a pre_edit / cursor position.
@@ -146,32 +129,6 @@ end
 function M.is_enabled()
   local result = utils.safe_call(vim.fn["skkeleton#is_enabled"])
   return result == true or result == 1
-end
-
---- Get completion data from skkeleton (synchronous, with caching).
---- Kept for callers that need a blocking result; new code should prefer
---- get_completion_data_async to avoid freezing the UI on slow dictionaries
---- (e.g. an skkserv that falls back to a network lookup).
---- @return table candidates, table ranks_array, string pre_edit
-function M.get_completion_data()
-  local cursor_pos = vim.api.nvim_win_get_cursor(0)
-  local cursor_line = cursor_pos[1]
-  local cursor_col = cursor_pos[2]
-
-  local pre_edit = normalize_pre_edit(request("getPreEdit"))
-
-  local cached_data = lookup_cache(pre_edit, cursor_line, cursor_col)
-  if cached_data then
-    return cached_data.candidates, cached_data.ranks, cached_data.pre_edit
-  end
-
-  utils.debug_log(string.format("Cache MISS for '%s', fetching...", pre_edit))
-  local candidates = request("getCompletionResult") or {}
-  local ranks_array = request("getRanks") or {}
-  utils.debug_log(string.format("pre_edit='%s', candidates=%d", pre_edit, #candidates))
-
-  store_cache(pre_edit, candidates, ranks_array, cursor_line, cursor_col)
-  return candidates, ranks_array, pre_edit
 end
 
 --- Get completion data from skkeleton without blocking the UI.
