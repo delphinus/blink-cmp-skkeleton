@@ -7,6 +7,14 @@
 -- so it is registered even when auto-setup is disabled.
 require("blink-cmp-skkeleton.backend").setup()
 
+-- Learn candidates that were selected with <Tab> and then left standing, the
+-- way SKK implementations do. Independent of auto-setup because it changes what
+-- skkeleton learns rather than when the menu is shown.
+-- Set vim.g.blink_cmp_skkeleton_auto_confirm = false to disable.
+if vim.g.blink_cmp_skkeleton_auto_confirm ~= false then
+  require("blink-cmp-skkeleton.autoconfirm").setup()
+end
+
 -- Check if user wants to disable auto-setup
 if vim.g.blink_cmp_skkeleton_auto_setup == false then
   return
