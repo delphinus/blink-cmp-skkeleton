@@ -66,12 +66,6 @@ local function is_skkeleton_item(item)
   return item ~= nil and item.data ~= nil and item.data.skkeleton == true
 end
 
---- @param item blink.cmp.CompletionItem
---- @return string
-local function inserted_text(item)
-  return item.textEdit and item.textEdit.newText or item.label
-end
-
 --- Is the pending candidate's text still where the preview put it?
 --- @param p blink-cmp-skkeleton.Pending
 --- @return boolean
@@ -103,9 +97,9 @@ function M.commit(reason)
   end
 
   utils.debug_log(string.format("autoconfirm: %s, learning %s/%s", reason, p.kana, p.text))
-  local kana, word = p.kana, p.word
+  local kana, word, text = p.kana, p.word, p.text
   vim.schedule(function()
-    skkeleton.register_completion(kana, word, utils.determine_henkan_type(kana))
+    skkeleton.register_completion(kana, word, utils.determine_henkan_type(kana), text)
   end)
   return true
 end
@@ -143,7 +137,7 @@ function M.on_select(list, item)
   pending = {
     kana = item.data.kana,
     word = item.data.word,
-    text = inserted_text(item),
+    text = utils.inserted_text(item),
     bufnr = vim.api.nvim_get_current_buf(),
     row = cursor[1],
     col = cursor[2],
