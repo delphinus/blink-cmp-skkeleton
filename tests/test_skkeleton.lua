@@ -33,6 +33,31 @@ local function mock_async(old_fn, responses, counter)
   })
 end
 
+--- Build one getCompleteItems entry the way skkeleton sends it over denops:
+--- everything the source needs at confirm time rides along as JSON in
+--- user_data.
+--- @param word string text to insert (okurigana included for okuriari)
+--- @param midasi string midashi the candidate was looked up under
+--- @param candidate string raw candidate, annotation included
+--- @param henkan_type? "okurinasi"|"okuriari" defaults to "okurinasi"
+--- @param info? string annotation
+local function raw_item(word, midasi, candidate, henkan_type, info)
+  return {
+    word = word,
+    abbr = word,
+    info = info or "",
+    equal = 1,
+    dup = 1,
+    empty = 1,
+    user_data = vim.json.encode({
+      tag = "skkeleton",
+      midasi = midasi,
+      word = candidate,
+      type = henkan_type or "okurinasi",
+    }),
+  }
+end
+
 -- is_enabled tests
 T["is_enabled"] = new_set()
 
@@ -126,34 +151,91 @@ T["register_completion"]["calls denops request"] = function()
   skkeleton.clear_cache()
 end
 
--- get_completion_data_async tests
-T["get_completion_data_async"] = new_set()
+-- get_complete_items_async tests
+T["get_complete_items_async"] = new_set()
 
-T["get_completion_data_async"]["returns completion data"] = function()
+T["get_complete_items_async"]["returns complete items"] = function()
   skkeleton.clear_cache()
   local old_fn = vim.fn
   vim.fn = mock_async(old_fn, {
     getPreEdit = "▽あい",
-    getCompletionResult = { { "あい", { "愛", "藍" } } },
-    getRanks = { { "愛", 100 } },
+    getCompleteItems = {
+      raw_item("愛", "あい", "愛"),
+      raw_item("藍", "あい", "藍;indigo", "okurinasi", "indigo"),
+    },
   })
 
   local result
-  skkeleton.get_completion_data_async(function(candidates, ranks_array, pre_edit)
-    result = { candidates = candidates, ranks_array = ranks_array, pre_edit = pre_edit }
+  skkeleton.get_complete_items_async(function(items, pre_edit)
+    result = { items = items, pre_edit = pre_edit }
   end)
 
   expect.no_equality(result, nil)
-  expect.equality(#result.candidates, 1)
-  expect.equality(result.candidates[1][1], "あい")
-  expect.equality(result.ranks_array[1][1], "愛")
+  expect.equality(#result.items, 2)
+  expect.equality(result.items[1].word, "愛")
+  expect.equality(result.items[1].midasi, "あい")
+  expect.equality(result.items[1].henkan_type, "okurinasi")
+  expect.equality(result.items[2].candidate, "藍;indigo")
+  expect.equality(result.items[2].info, "indigo")
   expect.equality(result.pre_edit, "▽あい")
 
   vim.fn = old_fn
   skkeleton.clear_cache()
 end
 
-T["get_completion_data_async"]["returns empty data on failure"] = function()
+T["get_complete_items_async"]["returns okuriari items alongside okurinasi ones"] = function()
+  skkeleton.clear_cache()
+  local old_fn = vim.fn
+  vim.fn = mock_async(old_fn, {
+    getPreEdit = "▽あたり",
+    getCompleteItems = {
+      raw_item("辺り", "あたり", "辺り"),
+      -- 読みを「あた」+「り」に分けて引いた候補。word は送り仮名込み
+      raw_item("当たり", "あたr", "当た", "okuriari"),
+    },
+  })
+
+  local result
+  skkeleton.get_complete_items_async(function(items)
+    result = items
+  end)
+
+  expect.equality(#result, 2)
+  expect.equality(result[2].word, "当たり")
+  expect.equality(result[2].midasi, "あたr")
+  expect.equality(result[2].candidate, "当た")
+  expect.equality(result[2].henkan_type, "okuriari")
+
+  vim.fn = old_fn
+  skkeleton.clear_cache()
+end
+
+T["get_complete_items_async"]["drops items with unusable user_data"] = function()
+  skkeleton.clear_cache()
+  local old_fn = vim.fn
+  vim.fn = mock_async(old_fn, {
+    getPreEdit = "▽あい",
+    getCompleteItems = {
+      raw_item("愛", "あい", "愛"),
+      { word = "藍", user_data = "not json" },
+      { word = "哀", user_data = vim.json.encode({ tag = "other-plugin" }) },
+      { word = "相" },
+    },
+  })
+
+  local result
+  skkeleton.get_complete_items_async(function(items)
+    result = items
+  end)
+
+  expect.equality(#result, 1)
+  expect.equality(result[1].word, "愛")
+
+  vim.fn = old_fn
+  skkeleton.clear_cache()
+end
+
+T["get_complete_items_async"]["returns empty data on failure"] = function()
   skkeleton.clear_cache()
   local old_fn = vim.fn
   vim.fn = setmetatable({}, {
@@ -165,7 +247,7 @@ T["get_completion_data_async"]["returns empty data on failure"] = function()
           elseif method == "getPreEdit" then
             success("▽あい")
           else
-            -- getCompletionResult fails
+            -- getCompleteItems fails
             failure("boom")
           end
         end
@@ -175,45 +257,43 @@ T["get_completion_data_async"]["returns empty data on failure"] = function()
   })
 
   local result
-  skkeleton.get_completion_data_async(function(candidates, ranks_array, pre_edit)
-    result = { candidates = candidates, ranks_array = ranks_array, pre_edit = pre_edit }
+  skkeleton.get_complete_items_async(function(items, pre_edit)
+    result = { items = items, pre_edit = pre_edit }
   end)
 
   expect.no_equality(result, nil)
-  expect.equality(#result.candidates, 0)
-  expect.equality(#result.ranks_array, 0)
+  expect.equality(#result.items, 0)
   expect.equality(result.pre_edit, "▽あい")
 
   vim.fn = old_fn
   skkeleton.clear_cache()
 end
 
-T["get_completion_data_async"]["caches result for same pre_edit"] = function()
+T["get_complete_items_async"]["caches result for same pre_edit"] = function()
   skkeleton.clear_cache()
   local old_fn = vim.fn
   local counter = { count = 0 }
   vim.fn = mock_async(old_fn, {
     getPreEdit = "▽あい",
-    getCompletionResult = { { "あい", { "愛" } } },
-    getRanks = { { "愛", 100 } },
+    getCompleteItems = { raw_item("愛", "あい", "愛") },
   }, counter)
 
   -- First call: cache miss
-  -- (getPrefix + getPreEdit + getCompletionResult + getRanks + getPrefix re-check)
+  -- (getPrefix + getPreEdit + getCompleteItems + getPrefix re-check)
   counter.count = 0
-  skkeleton.get_completion_data_async(function() end)
-  expect.equality(counter.count, 5)
+  skkeleton.get_complete_items_async(function() end)
+  expect.equality(counter.count, 4)
 
   -- Second call: cache hit (getPrefix + getPreEdit to check the key)
   counter.count = 0
-  skkeleton.get_completion_data_async(function() end)
+  skkeleton.get_complete_items_async(function() end)
   expect.equality(counter.count, 2)
 
   vim.fn = old_fn
   skkeleton.clear_cache()
 end
 
-T["get_completion_data_async"]["invalidates cache on pre_edit change"] = function()
+T["get_complete_items_async"]["invalidates cache on pre_edit change"] = function()
   skkeleton.clear_cache()
   local old_fn = vim.fn
   local pre_edit_value = "▽あい"
@@ -226,10 +306,8 @@ T["get_completion_data_async"]["invalidates cache on pre_edit change"] = functio
             success((pre_edit_value:gsub("^▽", "")))
           elseif method == "getPreEdit" then
             success(pre_edit_value)
-          elseif method == "getCompletionResult" then
-            success({ { pre_edit_value:sub(4), { "test" } } })
-          elseif method == "getRanks" then
-            success({})
+          elseif method == "getCompleteItems" then
+            success({ raw_item("test", pre_edit_value:sub(4), "test") })
           else
             success(nil)
           end
@@ -241,7 +319,7 @@ T["get_completion_data_async"]["invalidates cache on pre_edit change"] = functio
 
   -- First call
   local p1
-  skkeleton.get_completion_data_async(function(_candidates, _ranks_array, pre_edit)
+  skkeleton.get_complete_items_async(function(_items, pre_edit)
     p1 = pre_edit
   end)
   expect.equality(p1, "▽あい")
@@ -251,7 +329,7 @@ T["get_completion_data_async"]["invalidates cache on pre_edit change"] = functio
 
   -- Second call: cache miss (different pre_edit)
   local p2
-  skkeleton.get_completion_data_async(function(_candidates, _ranks_array, pre_edit)
+  skkeleton.get_complete_items_async(function(_items, pre_edit)
     p2 = pre_edit
   end)
   expect.equality(p2, "▽あいう")
@@ -261,7 +339,7 @@ T["get_completion_data_async"]["invalidates cache on pre_edit change"] = functio
   skkeleton.clear_cache()
 end
 
-T["get_completion_data_async"]["clears cache after register_completion"] = function()
+T["get_complete_items_async"]["clears cache after register_completion"] = function()
   skkeleton.clear_cache()
   local old_fn = vim.fn
   local counter = { count = 0 }
@@ -270,18 +348,17 @@ T["get_completion_data_async"]["clears cache after register_completion"] = funct
   -- tests) and does not count -- only async RPCs increment the counter.
   vim.fn = mock_async(old_fn, {
     getPreEdit = "▽あい",
-    getCompletionResult = { { "あい", { "愛" } } },
-    getRanks = { { "愛", 100 } },
+    getCompleteItems = { raw_item("愛", "あい", "愛") },
   }, counter)
 
   -- Populate cache
   counter.count = 0
-  skkeleton.get_completion_data_async(function() end)
-  expect.equality(counter.count, 5)
+  skkeleton.get_complete_items_async(function() end)
+  expect.equality(counter.count, 4)
 
   -- Verify cache works
   counter.count = 0
-  skkeleton.get_completion_data_async(function() end)
+  skkeleton.get_complete_items_async(function() end)
   expect.equality(counter.count, 2) -- cache hit
 
   -- Register completion (should clear cache)
@@ -289,43 +366,71 @@ T["get_completion_data_async"]["clears cache after register_completion"] = funct
 
   -- Next call should be cache miss
   counter.count = 0
-  skkeleton.get_completion_data_async(function() end)
-  expect.equality(counter.count, 5) -- cache was cleared
+  skkeleton.get_complete_items_async(function() end)
+  expect.equality(counter.count, 4) -- cache was cleared
 
   vim.fn = old_fn
   skkeleton.clear_cache()
 end
 
-T["get_completion_data_async"]["drops candidates whose midashi does not match the prefix"] = function()
+T["get_complete_items_async"]["drops candidates whose midashi does not match the prefix"] = function()
   skkeleton.clear_cache()
   local old_fn = vim.fn
   vim.fn = mock_async(old_fn, {
     getPrefix = "あい",
     getPreEdit = "▽あい",
-    -- "じぇい" は prefix "あい" に前方一致しないので除去される
-    getCompletionResult = { { "あい", { "愛" } }, { "じぇい", { "J POINTS" } } },
-    getRanks = { { "愛", 100 } },
+    getCompleteItems = {
+      raw_item("愛", "あい", "愛"),
+      -- "じぇい" は prefix "あい" に前方一致しないので除去される
+      raw_item("J POINTS", "じぇい", "J POINTS"),
+    },
   })
 
   local result
-  skkeleton.get_completion_data_async(function(candidates, ranks_array, pre_edit)
-    result = { candidates = candidates, ranks_array = ranks_array, pre_edit = pre_edit }
+  skkeleton.get_complete_items_async(function(items, pre_edit)
+    result = { items = items, pre_edit = pre_edit }
   end)
 
   expect.no_equality(result, nil)
-  expect.equality(#result.candidates, 1)
-  expect.equality(result.candidates[1][1], "あい")
+  expect.equality(#result.items, 1)
+  expect.equality(result.items[1].midasi, "あい")
   expect.equality(result.pre_edit, "▽あい")
 
   vim.fn = old_fn
   skkeleton.clear_cache()
 end
 
-T["get_completion_data_async"]["discards result when prefix changes mid-fetch"] = function()
+T["get_complete_items_async"]["keeps okuriari items cut at the okurigana"] = function()
   skkeleton.clear_cache()
   local old_fn = vim.fn
-  -- getPrefix is read twice: once up front, once after candidates/ranks. Return
-  -- a different henkanFeed the second time to simulate a keystroke landing
+  vim.fn = mock_async(old_fn, {
+    getPrefix = "あたり",
+    getPreEdit = "▽あたり",
+    getCompleteItems = {
+      -- 送りありの見出しは読みを送り仮名で切ったもの ("あた" + "り" の頭文字)
+      raw_item("当たり", "あたr", "当た", "okuriari"),
+      -- "おく" は読み "あたり" の先頭ではないので除去される
+      raw_item("送り", "おくr", "送", "okuriari"),
+    },
+  })
+
+  local result
+  skkeleton.get_complete_items_async(function(items)
+    result = items
+  end)
+
+  expect.equality(#result, 1)
+  expect.equality(result[1].midasi, "あたr")
+
+  vim.fn = old_fn
+  skkeleton.clear_cache()
+end
+
+T["get_complete_items_async"]["discards result when prefix changes mid-fetch"] = function()
+  skkeleton.clear_cache()
+  local old_fn = vim.fn
+  -- getPrefix is read twice: once up front, once after the items. Return a
+  -- different henkanFeed the second time to simulate a keystroke landing
   -- mid-fetch. The reading/candidates are then from inconsistent states and the
   -- whole result must be dropped.
   local prefix_calls = 0
@@ -338,10 +443,8 @@ T["get_completion_data_async"]["discards result when prefix changes mid-fetch"] 
             success(prefix_calls == 1 and "あい" or "あいう")
           elseif method == "getPreEdit" then
             success("▽あい")
-          elseif method == "getCompletionResult" then
-            success({ { "あい", { "愛" } } })
-          elseif method == "getRanks" then
-            success({ { "愛", 100 } })
+          elseif method == "getCompleteItems" then
+            success({ raw_item("愛", "あい", "愛") })
           else
             success(nil)
           end
@@ -352,12 +455,12 @@ T["get_completion_data_async"]["discards result when prefix changes mid-fetch"] 
   })
 
   local result
-  skkeleton.get_completion_data_async(function(candidates, ranks_array, pre_edit)
-    result = { candidates = candidates, ranks_array = ranks_array, pre_edit = pre_edit }
+  skkeleton.get_complete_items_async(function(items, pre_edit)
+    result = { items = items, pre_edit = pre_edit }
   end)
 
   expect.no_equality(result, nil)
-  expect.equality(#result.candidates, 0)
+  expect.equality(#result.items, 0)
   expect.equality(result.pre_edit, "")
   expect.equality(prefix_calls, 2)
 
@@ -365,7 +468,7 @@ T["get_completion_data_async"]["discards result when prefix changes mid-fetch"] 
   skkeleton.clear_cache()
 end
 
-T["get_completion_data_async"]["returns empty when not in input state"] = function()
+T["get_complete_items_async"]["returns empty when not in input state"] = function()
   skkeleton.clear_cache()
   local old_fn = vim.fn
   local completion_called = false
@@ -375,7 +478,7 @@ T["get_completion_data_async"]["returns empty when not in input state"] = functi
         return function(_plugin, method, _args, success, _failure)
           if method == "getPrefix" then
             success("")
-          elseif method == "getCompletionResult" then
+          elseif method == "getCompleteItems" then
             completion_called = true
             success({})
           else
@@ -388,12 +491,12 @@ T["get_completion_data_async"]["returns empty when not in input state"] = functi
   })
 
   local result
-  skkeleton.get_completion_data_async(function(candidates, ranks_array, pre_edit)
-    result = { candidates = candidates, ranks_array = ranks_array, pre_edit = pre_edit }
+  skkeleton.get_complete_items_async(function(items, pre_edit)
+    result = { items = items, pre_edit = pre_edit }
   end)
 
   expect.no_equality(result, nil)
-  expect.equality(#result.candidates, 0)
+  expect.equality(#result.items, 0)
   expect.equality(result.pre_edit, "")
   -- empty prefix short-circuits before fetching candidates
   expect.equality(completion_called, false)
@@ -402,27 +505,26 @@ T["get_completion_data_async"]["returns empty when not in input state"] = functi
   skkeleton.clear_cache()
 end
 
-T["get_completion_data_async"]["bails out and skips fetching when cancelled"] = function()
+T["get_complete_items_async"]["bails out and skips fetching when cancelled"] = function()
   skkeleton.clear_cache()
   local old_fn = vim.fn
   local counter = { count = 0 }
   vim.fn = mock_async(old_fn, {
     getPrefix = "あい",
     getPreEdit = "▽あい",
-    getCompletionResult = { { "あい", { "愛" } } },
-    getRanks = { { "愛", 100 } },
+    getCompleteItems = { raw_item("愛", "あい", "愛") },
   }, counter)
 
   local result
   counter.count = 0
-  skkeleton.get_completion_data_async(function(candidates, ranks_array, pre_edit)
-    result = { candidates = candidates, ranks_array = ranks_array, pre_edit = pre_edit }
+  skkeleton.get_complete_items_async(function(items, pre_edit)
+    result = { items = items, pre_edit = pre_edit }
   end, function()
     return true
   end)
 
   expect.no_equality(result, nil)
-  expect.equality(#result.candidates, 0)
+  expect.equality(#result.items, 0)
   expect.equality(result.pre_edit, "")
   -- cancelled before the first RPC: the chain never issues a request
   expect.equality(counter.count, 0)
@@ -450,13 +552,12 @@ T["cache configuration"]["returns data with custom TTL from vim.g"] = function()
 
   vim.fn = mock_async(old_fn, {
     getPreEdit = "▽あい",
-    getCompletionResult = { { "あい", { "愛" } } },
-    getRanks = {},
+    getCompleteItems = { raw_item("愛", "あい", "愛") },
   })
 
   local function fetch()
     local pre_edit
-    skkeleton.get_completion_data_async(function(_candidates, _ranks_array, p)
+    skkeleton.get_complete_items_async(function(_items, p)
       pre_edit = p
     end)
     return pre_edit
@@ -485,8 +586,7 @@ T["cache metrics"]["tracks hit and miss counts"] = function()
   local old_fn = vim.fn
   vim.fn = mock_async(old_fn, {
     getPreEdit = "▽あい",
-    getCompletionResult = { { "あい", { "愛" } } },
-    getRanks = {},
+    getCompleteItems = { raw_item("愛", "あい", "愛") },
   })
 
   skkeleton.clear_cache()
@@ -495,12 +595,12 @@ T["cache metrics"]["tracks hit and miss counts"] = function()
   local initial_misses = stats.misses
 
   -- First call: miss
-  skkeleton.get_completion_data_async(function() end)
+  skkeleton.get_complete_items_async(function() end)
   stats = skkeleton.get_cache_stats()
   expect.equality(stats.misses, initial_misses + 1)
 
   -- Second call: hit
-  skkeleton.get_completion_data_async(function() end)
+  skkeleton.get_complete_items_async(function() end)
   stats = skkeleton.get_cache_stats()
   expect.equality(stats.hits, initial_hits + 1)
 
@@ -512,17 +612,16 @@ T["cache metrics"]["calculates hit rate correctly"] = function()
   local old_fn = vim.fn
   vim.fn = mock_async(old_fn, {
     getPreEdit = "▽あい",
-    getCompletionResult = { { "あい", { "愛" } } },
-    getRanks = {},
+    getCompleteItems = { raw_item("愛", "あい", "愛") },
   })
 
   skkeleton.clear_cache()
 
   -- 1 miss + 3 hits = 75% hit rate
-  skkeleton.get_completion_data_async(function() end) -- miss
-  skkeleton.get_completion_data_async(function() end) -- hit
-  skkeleton.get_completion_data_async(function() end) -- hit
-  skkeleton.get_completion_data_async(function() end) -- hit
+  skkeleton.get_complete_items_async(function() end) -- miss
+  skkeleton.get_complete_items_async(function() end) -- hit
+  skkeleton.get_complete_items_async(function() end) -- hit
+  skkeleton.get_complete_items_async(function() end) -- hit
 
   local stats = skkeleton.get_cache_stats()
   expect.equality(stats.hit_rate >= 74 and stats.hit_rate <= 76, true) -- Allow for floating point
@@ -549,28 +648,27 @@ T["cache TTL boundary"]["invalidates at exact TTL boundary"] = function()
   local counter = { count = 0 }
   vim.fn = mock_async(old_fn, {
     getPreEdit = "▽あい",
-    getCompletionResult = { { "あい", { "愛" } } },
-    getRanks = {},
+    getCompleteItems = { raw_item("愛", "あい", "愛") },
   }, counter)
 
   -- First call at t=0 (cache miss)
   current_time = 0
   skkeleton.clear_cache()
   counter.count = 0
-  skkeleton.get_completion_data_async(function() end)
-  expect.equality(counter.count, 5) -- miss: full fetch + prefix re-check
+  skkeleton.get_complete_items_async(function() end)
+  expect.equality(counter.count, 4) -- miss: full fetch + prefix re-check
 
   -- At t=99 (just before 100ms TTL) - should be cache hit
   current_time = 99
   counter.count = 0
-  skkeleton.get_completion_data_async(function() end)
+  skkeleton.get_complete_items_async(function() end)
   expect.equality(counter.count, 2) -- hit: getPrefix + getPreEdit
 
   -- At t=100 (exactly at 100ms TTL) - should be cache miss
   current_time = 100
   counter.count = 0
-  skkeleton.get_completion_data_async(function() end)
-  expect.equality(counter.count, 5) -- miss: full fetch
+  skkeleton.get_complete_items_async(function() end)
+  expect.equality(counter.count, 4) -- miss: full fetch
 
   vim.fn = old_fn
   vim.loop = old_loop
@@ -591,27 +689,26 @@ T["cache TTL boundary"]["just before TTL is cache hit"] = function()
   local counter = { count = 0 }
   vim.fn = mock_async(old_fn, {
     getPreEdit = "▽あい",
-    getCompletionResult = { { "あい", { "愛" } } },
-    getRanks = {},
+    getCompleteItems = { raw_item("愛", "あい", "愛") },
   }, counter)
 
   -- First call at t=0 (cache miss)
   current_time = 0
   skkeleton.clear_cache()
   counter.count = 0
-  skkeleton.get_completion_data_async(function() end)
-  expect.equality(counter.count, 5) -- miss
+  skkeleton.get_complete_items_async(function() end)
+  expect.equality(counter.count, 4) -- miss
 
   -- At t=50 (half of 100ms TTL) - should be cache hit
   current_time = 50
   counter.count = 0
-  skkeleton.get_completion_data_async(function() end)
+  skkeleton.get_complete_items_async(function() end)
   expect.equality(counter.count, 2) -- hit
 
   -- At t=99 (1ms before TTL) - should still be cache hit
   current_time = 99
   counter.count = 0
-  skkeleton.get_completion_data_async(function() end)
+  skkeleton.get_complete_items_async(function() end)
   expect.equality(counter.count, 2) -- hit
 
   vim.fn = old_fn

@@ -13,6 +13,29 @@ local function new_source()
   return source_module.new()
 end
 
+--- Build one getCompleteItems entry the way skkeleton sends it over denops.
+--- @param word string text to insert (okurigana included for okuriari)
+--- @param midasi string midashi the candidate was looked up under
+--- @param candidate string raw candidate, annotation included
+--- @param henkan_type? "okurinasi"|"okuriari" defaults to "okurinasi"
+--- @param info? string annotation
+local function raw_item(word, midasi, candidate, henkan_type, info)
+  return {
+    word = word,
+    abbr = word,
+    info = info or "",
+    equal = 1,
+    dup = 1,
+    empty = 1,
+    user_data = vim.json.encode({
+      tag = "skkeleton",
+      midasi = midasi,
+      word = candidate,
+      type = henkan_type or "okurinasi",
+    }),
+  }
+end
+
 -- Initialization tests
 T["initialization"] = new_set()
 
@@ -197,10 +220,11 @@ T["get_completions"]["builds completion items correctly"] = function()
       end
       if k == "denops#request_async" then
         return function(plugin, method, args, success, _failure)
-          if method == "getCompletionResult" then
-            success({ { "あい", { "愛", "藍;indigo" } } })
-          elseif method == "getRanks" then
-            success({ { "愛", 100 } })
+          if method == "getCompleteItems" then
+            success({
+              raw_item("愛", "あい", "愛"),
+              raw_item("藍", "あい", "藍;indigo", "okurinasi", "indigo"),
+            })
           elseif method == "getPreEdit" then
             success("▽あい")
           elseif method == "getPrefix" then
@@ -238,6 +262,65 @@ T["get_completions"]["builds completion items correctly"] = function()
   expect.equality(items[1].filterText, "あい")
   expect.equality(items[2].label, "藍")
   expect.no_equality(items[2].documentation, nil)
+
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "" })
+  vim.fn = old_fn
+  require("blink-cmp-skkeleton.skkeleton").clear_cache()
+end
+
+T["get_completions"]["offers okuriari candidates"] = function()
+  require("blink-cmp-skkeleton.skkeleton").clear_cache()
+  local source = new_source()
+  local old_fn = vim.fn
+  vim.fn = setmetatable({}, {
+    __index = function(t, k)
+      if k == "skkeleton#is_enabled" then
+        return function()
+          return 1
+        end
+      end
+      if k == "denops#request_async" then
+        return function(plugin, method, args, success, _failure)
+          if method == "getCompleteItems" then
+            success({
+              raw_item("辺り", "あたり", "辺り"),
+              raw_item("当たり", "あたr", "当た", "okuriari"),
+            })
+          elseif method == "getPreEdit" then
+            success("▽あたり")
+          elseif method == "getPrefix" then
+            success("あたり")
+          end
+        end
+      end
+      return old_fn[k]
+    end,
+  })
+
+  -- "▽あたり" is 12 bytes; "あたり" starts at byte 4.
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "▽あたり" })
+  vim.api.nvim_win_set_cursor(0, { 1, 12 })
+
+  local items = nil
+
+  source:get_completions({
+    cursor = { 1, 12 },
+    line = "▽あたり",
+    bounds = { start_col = 4, length = 9 },
+  }, function(response)
+    items = response.items
+  end)
+
+  vim.wait(100)
+
+  expect.equality(#items, 2)
+  expect.equality(items[1].label, "辺り")
+  -- 送りありの候補は送り仮名まで挿入し、学習は見出し "あたr" に対して行う
+  expect.equality(items[2].label, "当たり")
+  expect.equality(items[2].textEdit.newText, "当たり")
+  expect.equality(items[2].data.kana, "あたr")
+  expect.equality(items[2].data.word, "当た")
+  expect.equality(items[2].data.henkan_type, "okuriari")
 
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "" })
   vim.fn = old_fn
@@ -373,6 +456,42 @@ T["execute"]["registers okuriari with asterisk"] = function()
     },
   }, function() end, function() end)
 
+  expect.equality(request_args[3], "okuriari")
+
+  vim.fn = old_fn
+end
+
+T["execute"]["registers okuriari from the item's henkan type"] = function()
+  local source = new_source()
+  local old_fn = vim.fn
+  local request_args = nil
+
+  vim.fn = setmetatable({}, {
+    __index = function(t, k)
+      if k == "denops#request" then
+        return function(plugin, method, args)
+          if method == "completeCallback" then
+            request_args = args
+          end
+        end
+      end
+      return old_fn[k]
+    end,
+  })
+
+  -- 送りありの見出し "あたr" は、見た目だけでは送りなしの読みと区別が付かない。
+  -- 候補が持っている種別を使わないと送りなしとして学習してしまう
+  source:execute({}, {
+    data = {
+      skkeleton = true,
+      kana = "あたr",
+      word = "当た",
+      henkan_type = "okuriari",
+    },
+  }, function() end, function() end)
+
+  expect.equality(request_args[1], "あたr")
+  expect.equality(request_args[2], "当た")
   expect.equality(request_args[3], "okuriari")
 
   vim.fn = old_fn

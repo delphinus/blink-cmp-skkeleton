@@ -8,61 +8,48 @@ local completion = require("blink-cmp-skkeleton.completion")
 
 local T = new_set()
 
--- convert_ranks_to_map tests
-T["convert_ranks_to_map"] = new_set()
+local text_edit_range = {
+  start = { line = 0, character = 0 },
+  ["end"] = { line = 0, character = 9 },
+}
 
-T["convert_ranks_to_map"]["converts empty array"] = function()
-  local result = completion.convert_ranks_to_map({})
-  expect.equality(type(result), "table")
-  expect.equality(next(result), nil) -- empty table
-end
-
-T["convert_ranks_to_map"]["converts ranks array to map"] = function()
-  local ranks_array = {
-    { "愛", 100 },
-    { "藍", 50 },
+--- Build a decoded complete item, the shape skkeleton.lua hands over.
+--- @param word string text to insert (okurigana included for okuriari)
+--- @param midasi string
+--- @param candidate string raw candidate, annotation included
+--- @param henkan_type? "okurinasi"|"okuriari" defaults to "okurinasi"
+--- @param info? string annotation
+local function complete_item(word, midasi, candidate, henkan_type, info)
+  return {
+    word = word,
+    info = info or "",
+    midasi = midasi,
+    candidate = candidate,
+    henkan_type = henkan_type or "okurinasi",
   }
-  local result = completion.convert_ranks_to_map(ranks_array)
-  expect.equality(result["愛"], 100)
-  expect.equality(result["藍"], 50)
-end
-
-T["convert_ranks_to_map"]["handles invalid entries"] = function()
-  local ranks_array = {
-    { "愛", 100 },
-    { nil, 50 }, -- invalid
-    { "藍" }, -- missing rank
-  }
-  local result = completion.convert_ranks_to_map(ranks_array)
-  expect.equality(result["愛"], 100)
-  expect.equality(result["藍"], nil)
 end
 
 -- build_completion_item tests
 T["build_completion_item"] = new_set()
 
 T["build_completion_item"]["creates item without documentation"] = function()
-  local text_edit_range = {
-    start = { line = 0, character = 0 },
-    ["end"] = { line = 0, character = 5 },
-  }
-  local item = completion.build_completion_item("あい", "愛", 100, text_edit_range)
+  local item = completion.build_completion_item(complete_item("愛", "あい", "愛"), 1, text_edit_range)
 
   expect.equality(item.label, "愛")
   expect.equality(item.filterText, "あい")
   expect.equality(item.textEdit.newText, "愛")
   expect.equality(item.data.kana, "あい")
   expect.equality(item.data.word, "愛")
-  expect.equality(item.data.rank, 100)
+  expect.equality(item.data.henkan_type, "okurinasi")
   expect.equality(item.documentation, nil)
 end
 
 T["build_completion_item"]["creates item with documentation"] = function()
-  local text_edit_range = {
-    start = { line = 0, character = 0 },
-    ["end"] = { line = 0, character = 5 },
-  }
-  local item = completion.build_completion_item("あい", "藍;indigo", 50, text_edit_range)
+  local item = completion.build_completion_item(
+    complete_item("藍", "あい", "藍;indigo", "okurinasi", "indigo"),
+    1,
+    text_edit_range
+  )
 
   expect.equality(item.label, "藍")
   expect.no_equality(item.documentation, nil)
@@ -70,107 +57,60 @@ T["build_completion_item"]["creates item with documentation"] = function()
   expect.equality(item.documentation.value, "indigo")
 end
 
+T["build_completion_item"]["prefers the given filter text over the midashi"] = function()
+  local item = completion.build_completion_item(complete_item("愛", "あい", "愛"), 1, text_edit_range, "▽あい")
+
+  expect.equality(item.filterText, "▽あい")
+end
+
+T["build_completion_item"]["inserts the okurigana with an okuriari candidate"] = function()
+  -- 「あたり」を「あた」+「り」に分けて引いた候補。辞書の見出しと候補は送り仮名
+  -- を含まないが、挿入する文字列と学習させる見出しは別物になる
+  local item =
+    completion.build_completion_item(complete_item("当たり", "あたr", "当た", "okuriari"), 1, text_edit_range)
+
+  expect.equality(item.label, "当たり")
+  expect.equality(item.textEdit.newText, "当たり")
+  expect.equality(item.data.kana, "あたr")
+  expect.equality(item.data.word, "当た")
+  expect.equality(item.data.henkan_type, "okuriari")
+end
+
 -- build_completion_items tests
 T["build_completion_items"] = new_set()
 
-T["build_completion_items"]["builds items from candidates"] = function()
-  local candidates = {
-    { "あい", { "愛", "藍;indigo" } },
-  }
-  local ranks = { ["愛"] = 100 }
-  local text_edit_range = {
-    start = { line = 0, character = 0 },
-    ["end"] = { line = 0, character = 9 },
-  }
-
-  local items = completion.build_completion_items(candidates, ranks, text_edit_range)
+T["build_completion_items"]["builds items from complete items"] = function()
+  local items = completion.build_completion_items({
+    complete_item("愛", "あい", "愛"),
+    complete_item("藍", "あい", "藍;indigo", "okurinasi", "indigo"),
+  }, text_edit_range)
 
   expect.equality(#items, 2)
-  expect.equality(items[1].label, "愛") -- Higher rank comes first
+  expect.equality(items[1].label, "愛")
   expect.equality(items[2].label, "藍")
 end
 
-T["build_completion_items"]["sorts by rank"] = function()
-  local candidates = {
-    { "あい", { "愛", "藍", "哀" } },
-  }
-  local ranks = {
-    ["愛"] = 100,
-    ["哀"] = 50,
-    -- 藍 has no rank, gets global rank
-  }
-  local text_edit_range = {
-    start = { line = 0, character = 0 },
-    ["end"] = { line = 0, character = 9 },
-  }
-
-  local items = completion.build_completion_items(candidates, ranks, text_edit_range)
+T["build_completion_items"]["keeps skkeleton's order through sortText"] = function()
+  -- skkeleton側でランクの適用と並べ替えが済んでいるので、渡された順がそのまま
+  -- 表示順になる必要がある
+  local items = completion.build_completion_items({
+    complete_item("哀", "あい", "哀"),
+    complete_item("愛", "あい", "愛"),
+    complete_item("当たり", "あたr", "当た", "okuriari"),
+  }, text_edit_range)
 
   expect.equality(#items, 3)
-  expect.equality(items[1].label, "愛") -- rank 100
-  expect.equality(items[2].label, "哀") -- rank 50
-  expect.equality(items[3].label, "藍") -- global rank -1
+  expect.equality(items[1].label, "哀")
+  expect.equality(items[2].label, "愛")
+  expect.equality(items[3].label, "当たり")
+  expect.equality(items[1].sortText < items[2].sortText, true)
+  expect.equality(items[2].sortText < items[3].sortText, true)
 end
 
-T["build_completion_items"]["maintains stable order for duplicate ranks"] = function()
-  local candidates = {
-    { "あい", { "愛", "藍", "哀", "相" } },
-  }
-  -- All items have the same rank
-  local ranks = {
-    ["愛"] = 100,
-    ["藍"] = 100,
-    ["哀"] = 100,
-    ["相"] = 100,
-  }
-  local text_edit_range = {
-    start = { line = 0, character = 0 },
-    ["end"] = { line = 0, character = 9 },
-  }
-
-  local items = completion.build_completion_items(candidates, ranks, text_edit_range)
-
-  expect.equality(#items, 4)
-  -- All should have rank 100
-  for _, item in ipairs(items) do
-    expect.equality(item.data.rank, 100)
-  end
-end
-
-T["build_completion_items"]["handles empty candidates"] = function()
-  local candidates = {}
-  local ranks = {}
-  local text_edit_range = {
-    start = { line = 0, character = 0 },
-    ["end"] = { line = 0, character = 9 },
-  }
-
-  local items = completion.build_completion_items(candidates, ranks, text_edit_range)
+T["build_completion_items"]["handles empty items"] = function()
+  local items = completion.build_completion_items({}, text_edit_range)
 
   expect.equality(#items, 0)
-end
-
-T["build_completion_items"]["handles negative ranks correctly"] = function()
-  local candidates = {
-    { "あい", { "愛", "藍" } },
-  }
-  -- 愛 has explicit negative rank, 藍 gets global rank
-  local ranks = {
-    ["愛"] = -50,
-  }
-  local text_edit_range = {
-    start = { line = 0, character = 0 },
-    ["end"] = { line = 0, character = 9 },
-  }
-
-  local items = completion.build_completion_items(candidates, ranks, text_edit_range)
-
-  expect.equality(#items, 2)
-  -- 藍 gets global rank -1, 愛 has -50
-  expect.equality(items[1].label, "藍") -- global rank -1 > -50
-  expect.equality(items[2].label, "愛") -- rank -50
-  expect.equality(items[1].data.rank, -1)
-  expect.equality(items[2].data.rank, -50)
 end
 
 return T

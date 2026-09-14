@@ -1,6 +1,14 @@
 --- Skkeleton and denops integration layer
 --- @module blink-cmp-skkeleton.skkeleton
 
+--- A candidate as skkeleton hands it over through getCompleteItems.
+--- @class blink-cmp-skkeleton.CompleteItem
+--- @field word string text to insert (okurigana included for okuriari)
+--- @field info string annotation, empty when the candidate has none
+--- @field midasi string midashi the candidate was looked up under
+--- @field candidate string raw candidate, annotation included
+--- @field henkan_type "okurinasi"|"okuriari"
+
 local utils = require("blink-cmp-skkeleton.utils")
 local cache_module = require("blink-cmp-skkeleton.cache")
 
@@ -45,7 +53,7 @@ end
 --- @param pre_edit string
 --- @param cursor_line integer
 --- @param cursor_col integer
---- @return table|nil cached_data { candidates, ranks, pre_edit }
+--- @return table|nil cached_data { items, pre_edit }
 local function lookup_cache(pre_edit, cursor_line, cursor_col)
   local cached_data = cache.get(pre_edit)
 
@@ -77,23 +85,72 @@ local function lookup_cache(pre_edit, cursor_line, cursor_col)
   return cached_data
 end
 
---- Drop candidates whose midashi (kana) does not start with `prefix`.
+--- Decode one item of getCompleteItems into the shape the rest of the plugin
+--- works with. skkeleton ships the bookkeeping it needs back at confirm time
+--- (midashi, raw candidate, henkan type) as JSON in user_data.
+--- @param raw table item as returned by getCompleteItems
+--- @return blink-cmp-skkeleton.CompleteItem|nil
+local function decode_item(raw)
+  if type(raw) ~= "table" or type(raw.word) ~= "string" or type(raw.user_data) ~= "string" then
+    return nil
+  end
+  local ok, metadata = pcall(vim.json.decode, raw.user_data)
+  if not ok or type(metadata) ~= "table" or metadata.tag ~= "skkeleton" then
+    return nil
+  end
+  return {
+    -- 送りありの候補では、word は送り仮名まで含んだ挿入用の文字列になっている
+    word = raw.word,
+    info = raw.info or "",
+    midasi = metadata.midasi,
+    candidate = metadata.word,
+    henkan_type = metadata.type,
+  }
+end
+
+--- Decode a getCompleteItems response, dropping anything unparsable.
+--- @param raw_items any[]
+--- @return blink-cmp-skkeleton.CompleteItem[]
+local function decode_items(raw_items)
+  local items = {}
+  for _, raw in ipairs(raw_items) do
+    local item = decode_item(raw)
+    if item then
+      table.insert(items, item)
+    end
+  end
+  return items
+end
+
+--- Drop items whose midashi does not line up with `prefix`.
 --- skkserv completion ("1<prefix> ") only ever returns midashis that begin with
---- the prefix, so a candidate that fails this check came from a stale skkeleton
---- state and must not be shown. UTF-8 byte-prefix matching coincides with
---- character-prefix matching, so a plain `sub` comparison is correct.
---- @param candidates any[]
+--- the prefix, so an okurinasi candidate that fails this check came from a stale
+--- skkeleton state and must not be shown. An okuriari midashi is the reading cut
+--- at the okurigana ("あたり" -> "あたr"), so the part before the trailing
+--- romanized okurigana is what has to be a prefix of the reading. UTF-8
+--- byte-prefix matching coincides with character-prefix matching, so a plain
+--- `sub` comparison is correct.
+--- @param items blink-cmp-skkeleton.CompleteItem[]
 --- @param prefix string
---- @return any[]
-local function filter_candidates_by_prefix(candidates, prefix)
+--- @return blink-cmp-skkeleton.CompleteItem[]
+local function filter_items_by_prefix(items, prefix)
   if prefix == "" then
-    return candidates
+    return items
   end
   local filtered = {}
-  for _, cand in ipairs(candidates) do
-    local kana = cand[1]
-    if type(kana) == "string" and kana:sub(1, #prefix) == prefix then
-      table.insert(filtered, cand)
+  for _, item in ipairs(items) do
+    local midasi = item.midasi
+    if type(midasi) == "string" then
+      local matched
+      if item.henkan_type == "okuriari" then
+        local stem = midasi:gsub("%a$", "")
+        matched = prefix:sub(1, #stem) == stem
+      else
+        matched = midasi:sub(1, #prefix) == prefix
+      end
+      if matched then
+        table.insert(filtered, item)
+      end
     end
   end
   return filtered
@@ -101,14 +158,12 @@ end
 
 --- Store freshly fetched completion data in the cache.
 --- @param pre_edit string
---- @param candidates any[]
---- @param ranks_array any[]
+--- @param items blink-cmp-skkeleton.CompleteItem[]
 --- @param cursor_line integer
 --- @param cursor_col integer
-local function store_cache(pre_edit, candidates, ranks_array, cursor_line, cursor_col)
+local function store_cache(pre_edit, items, cursor_line, cursor_col)
   cache.set(pre_edit, {
-    candidates = candidates,
-    ranks = ranks_array,
+    items = items,
     pre_edit = pre_edit,
   }, { cursor_line, cursor_col })
 end
@@ -131,32 +186,37 @@ function M.is_enabled()
   return result == true or result == 1
 end
 
---- Get completion data from skkeleton without blocking the UI.
+--- Get completion items from skkeleton without blocking the UI.
+---
+--- getCompleteItems returns the okurinasi candidates (completion ranks already
+--- applied) followed by the okuriari ones, which skkeleton finds by splitting
+--- the reading at every position and looking each piece up ("あたり" ->
+--- "あた*り" => 辺り, "あ*たり" => 当たり). It is the same set of candidates
+--- skkeleton's two ddc sources produce together.
 ---
 --- Because the RPCs are no longer atomic (the user can keep typing between each
 --- async round-trip), the reading and the candidates could otherwise be read
 --- from different skkeleton states and end up mismatched. Three guards keep them
 --- consistent:
 ---  1. getPrefix (= state.henkanFeed, the exact key candidates are generated
----     from) is read first, and candidates whose midashi does not start with
----     that prefix are dropped, so candidates from an unrelated reading never
+---     from) is read first, and items whose midashi does not line up with that
+---     prefix are dropped, so candidates from an unrelated reading never
 ---     surface.
----  2. getPrefix is read AGAIN after the candidates and ranks have been
----     fetched. If state.henkanFeed changed at any point during the fetch, the
----     reading (getPreEdit), candidates and ranks may each have been read from a
----     different state -- the whole result is discarded. This is what stops the
----     candidate/reading mismatch the per-candidate filter cannot: the filter
----     only ties candidates to the prefix, not the prefix to the displayed
----     pre_edit, so without this bracket a keystroke landing between getPrefix
----     and getPreEdit would surface (filter-passing) candidates under an
----     unrelated reading.
+---  2. getPrefix is read AGAIN after the items have been fetched. If
+---     state.henkanFeed changed at any point during the fetch, the reading
+---     (getPreEdit) and the items may have been read from different states --
+---     the whole result is discarded. This is what stops the candidate/reading
+---     mismatch the per-item filter cannot: the filter only ties candidates to
+---     the prefix, not the prefix to the displayed pre_edit, so without this
+---     bracket a keystroke landing between getPrefix and getPreEdit would
+---     surface (filter-passing) candidates under an unrelated reading.
 ---  3. An empty prefix means skkeleton is not in input state, so we return empty
 ---     instead of falling back to the buffer.
 --- A `should_cancel` predicate lets a superseded request bail out without
 --- polluting the (single-slot) cache.
---- @param callback fun(candidates: table, ranks_array: table, pre_edit: string)
+--- @param callback fun(items: blink-cmp-skkeleton.CompleteItem[], pre_edit: string)
 --- @param should_cancel? fun(): boolean returns true when the request is stale
-function M.get_completion_data_async(callback, should_cancel)
+function M.get_complete_items_async(callback, should_cancel)
   should_cancel = should_cancel or function()
     return false
   end
@@ -167,7 +227,7 @@ function M.get_completion_data_async(callback, should_cancel)
 
   -- Deliver an empty result without touching the cache.
   local function bail()
-    callback({}, {}, "")
+    callback({}, "")
   end
 
   if should_cancel() then
@@ -194,16 +254,16 @@ function M.get_completion_data_async(callback, should_cancel)
 
       local cached_data = lookup_cache(pre_edit, cursor_line, cursor_col)
       if cached_data then
-        callback(cached_data.candidates, cached_data.ranks, cached_data.pre_edit)
+        callback(cached_data.items, cached_data.pre_edit)
         return
       end
 
       -- Re-read the prefix once everything has been fetched. If it no longer
       -- matches the prefix we started from, skkeleton's henkanFeed changed
-      -- mid-fetch, so pre_edit / candidates / ranks may be from different states
-      -- and must not be shown together. Only on a stable prefix do we filter,
-      -- cache and deliver.
-      local function finalize(candidates, ranks_array)
+      -- mid-fetch, so pre_edit and the items may be from different states and
+      -- must not be shown together. Only on a stable prefix do we filter, cache
+      -- and deliver.
+      local function finalize(items)
         request_async("getPrefix", function(raw_prefix2)
           if should_cancel() then
             return bail()
@@ -214,39 +274,27 @@ function M.get_completion_data_async(callback, should_cancel)
             )
             return bail()
           end
-          local filtered = filter_candidates_by_prefix(candidates, prefix)
-          store_cache(pre_edit, filtered, ranks_array, cursor_line, cursor_col)
-          utils.debug_log(string.format("pre_edit='%s', candidates=%d", pre_edit, #filtered))
-          callback(filtered, ranks_array, pre_edit)
+          local filtered = filter_items_by_prefix(items, prefix)
+          store_cache(pre_edit, filtered, cursor_line, cursor_col)
+          utils.debug_log(string.format("pre_edit='%s', items=%d", pre_edit, #filtered))
+          callback(filtered, pre_edit)
         end, bail)
       end
 
       utils.debug_log(string.format("Cache MISS for '%s', fetching (async)...", pre_edit))
-      request_async("getCompletionResult", function(raw_candidates)
+      request_async("getCompleteItems", function(raw_items)
         if should_cancel() then
           return bail()
         end
-        local candidates = raw_candidates or {}
-        request_async("getRanks", function(raw_ranks)
-          if should_cancel() then
-            return bail()
-          end
-          finalize(candidates, raw_ranks or {})
-        end, function()
-          -- getRanks failed: still surface candidates with empty ranks.
-          if should_cancel() then
-            return bail()
-          end
-          finalize(candidates, {})
-        end)
+        finalize(decode_items(raw_items or {}))
       end, function()
-        callback({}, {}, pre_edit)
+        callback({}, pre_edit)
       end)
     end, function()
-      callback({}, {}, "")
+      callback({}, "")
     end)
   end, function()
-    callback({}, {}, "")
+    callback({}, "")
   end)
 end
 
