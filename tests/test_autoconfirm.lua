@@ -51,8 +51,8 @@ end
 local function with_captured_registration(fn)
   local saved = skkeleton.register_completion
   local calls = {}
-  skkeleton.register_completion = function(kana, word, henkan_type)
-    table.insert(calls, { kana = kana, word = word, henkan_type = henkan_type })
+  skkeleton.register_completion = function(kana, word, henkan_type, inserted)
+    table.insert(calls, { kana = kana, word = word, henkan_type = henkan_type, inserted = inserted })
   end
   local ok, err = pcall(fn, calls)
   skkeleton.register_completion = saved
@@ -103,6 +103,8 @@ T["commit"]["learns a candidate left standing when the menu closes"] = function(
     expect.equality(calls[1].kana, "ぷらぐいん")
     expect.equality(calls[1].word, "プラグイン")
     expect.equality(calls[1].henkan_type, "okurinasi")
+    -- the text the preview left standing, for skkeleton's kakutei undo
+    expect.equality(calls[1].inserted, "プラグイン")
   end)
 end
 
