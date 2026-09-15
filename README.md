@@ -9,6 +9,7 @@ Native [blink.cmp](https://github.com/saghen/blink.cmp) source for [skkeleton](h
 - ✅ Native blink.cmp integration (no `blink.compat` required)
 - ✅ Dynamic source switching (only shows when skkeleton is active)
 - ✅ Fuzzy matching support for Japanese characters
+- ✅ Okurinasi and okuriari candidates from one reading (「あたり」 offers both 辺り and 当たり), the same set skkeleton's two ddc sources produce
 - ✅ Dictionary learning for both okurinasi and okuriari
 - ✅ Learns a candidate selected and left standing, like other SKK implementations
 - ✅ Proper pre-edit text replacement
@@ -17,7 +18,7 @@ Native [blink.cmp](https://github.com/saghen/blink.cmp) source for [skkeleton](h
 
 ## 📦 Installation
 
-**Requirements**: Neovim >= 0.10, [blink.cmp](https://github.com/saghen/blink.cmp), [skkeleton](https://github.com/vim-skk/skkeleton), [denops.vim](https://github.com/vim-denops/denops.vim), [Deno](https://deno.land/)
+**Requirements**: Neovim >= 0.10, [blink.cmp](https://github.com/saghen/blink.cmp), [skkeleton](https://github.com/vim-skk/skkeleton) >= 3.0.0, [denops.vim](https://github.com/vim-denops/denops.vim), [Deno](https://deno.land/)
 
 ### Using [lazy.nvim](https://github.com/folke/lazy.nvim)
 
@@ -258,15 +259,24 @@ The plugin uses context-aware filtering to ensure compatibility with blink.cmp's
 - The plugin sets `filterText='相沢た'` to match, preventing items from being filtered out
 - When `context.bounds` is not available, falls back to using the kana reading
 
+### Candidates
+
+Candidates come from a single `getCompleteItems` call, which returns both kinds skkeleton can complete:
+
+- **okurinasi**: readings starting with what has been typed, with the completion ranks already applied
+- **okuriari**: the reading split at every position and looked up as an okurigana conversion ("あたり" → "あた\*り" = 辺り, "あ\*たり" = 当たり)
+
+skkeleton orders the two groups itself, so the position in that list becomes the item's `sortText` instead of the items being sorted here.
+
 ### Dictionary Learning
 
-The plugin automatically detects the henkan type:
+Every item carries the midashi it was looked up under, the raw candidate and its henkan type, and those are what go to skkeleton's `completeCallback` on confirmation. The type matters: an okuriari candidate has to be learned under its own midashi ("あたr"), which cannot be told apart from an okurinasi reading by looking at it.
+
+Items that did not come from this source (no henkan type) fall back to guessing from the reading:
 
 - Uppercase letters (e.g., "おくR") → okuriari
-- Asterisk (e.g., "おく*り") → okuriari
+- Asterisk (e.g., "おく\*り") → okuriari
 - Otherwise → okurinasi
-
-This information is passed to skkeleton's `completeCallback` for proper dictionary registration.
 
 ### Learning Without `accept`
 

@@ -88,7 +88,7 @@ function source:get_completions(context, callback)
   -- editor. The result is delivered through the callback below. The
   -- `should_cancel` predicate lets the RPC chain abort early (and skip caching)
   -- once blink.cmp has superseded this request.
-  skkeleton.get_completion_data_async(function(candidates, ranks_array, pre_edit)
+  skkeleton.get_complete_items_async(function(complete_items, pre_edit)
     if cancelled then
       return
     end
@@ -98,10 +98,9 @@ function source:get_completions(context, callback)
         return
       end
 
-      local ranks = completion.convert_ranks_to_map(ranks_array)
       local text_edit_range = context_module.compute_text_edit_range(context, pre_edit)
       local filter_text = context_module.extract_filter_text(context, pre_edit)
-      local items = completion.build_completion_items(candidates, ranks, text_edit_range, filter_text)
+      local items = completion.build_completion_items(complete_items, text_edit_range, filter_text)
 
       utils.debug_log(string.format("Returning %d items for pre_edit='%s'", #items, pre_edit))
 
@@ -141,8 +140,11 @@ function source:execute(context, item, callback, default_implementation)
   -- First, let blink.cmp insert the text
   default_implementation()
 
-  -- Then, register the result with skkeleton for dictionary learning
-  local henkan_type = utils.determine_henkan_type(item.data.kana)
+  -- Then, register the result with skkeleton for dictionary learning. Items
+  -- built from getCompleteItems know their henkan type: an okuriari candidate
+  -- has to be learned under its own midashi ("あたr"), and that midashi cannot
+  -- be told apart from an okurinasi reading by looking at it.
+  local henkan_type = item.data.henkan_type or utils.determine_henkan_type(item.data.kana)
   skkeleton.register_completion(item.data.kana, item.data.word, henkan_type, utils.inserted_text(item))
 
   callback()

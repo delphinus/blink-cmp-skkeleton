@@ -98,8 +98,9 @@ function M.commit(reason)
 
   utils.debug_log(string.format("autoconfirm: %s, learning %s/%s", reason, p.kana, p.text))
   local kana, word, text = p.kana, p.word, p.text
+  local henkan_type = p.henkan_type or utils.determine_henkan_type(kana)
   vim.schedule(function()
-    skkeleton.register_completion(kana, word, utils.determine_henkan_type(kana), text)
+    skkeleton.register_completion(kana, word, henkan_type, text)
   end)
   return true
 end
@@ -137,6 +138,7 @@ function M.on_select(list, item)
   pending = {
     kana = item.data.kana,
     word = item.data.word,
+    henkan_type = item.data.henkan_type,
     text = utils.inserted_text(item),
     bufnr = vim.api.nvim_get_current_buf(),
     row = cursor[1],

@@ -1,100 +1,60 @@
 --- Completion item builder for blink-cmp-skkeleton
 --- @module blink-cmp-skkeleton.completion
 
-local utils = require("blink-cmp-skkeleton.utils")
-
 local M = {}
 
---- Convert ranks array to map
---- @param ranks_array any[]
---- @return table<string, number>
-function M.convert_ranks_to_map(ranks_array)
-  local ranks = {}
-  for _, rank_entry in ipairs(ranks_array) do
-    if rank_entry[1] and rank_entry[2] then
-      ranks[rank_entry[1]] = rank_entry[2]
-    end
-  end
-  return ranks
-end
-
 --- Build a single completion item
---- @param kana string
---- @param word string
---- @param rank number
+--- @param item blink-cmp-skkeleton.CompleteItem
+--- @param index integer position of the item in skkeleton's ordering (1-based)
 --- @param text_edit_range table
 --- @param filter_text string|nil Filter text for blink.cmp matching
 --- @return blink.cmp.CompletionItem
-function M.build_completion_item(kana, word, rank, text_edit_range, filter_text)
-  local label, info = utils.parse_word(word)
-
-  local item = {
-    label = label,
+function M.build_completion_item(item, index, text_edit_range, filter_text)
+  local completion_item = {
+    label = item.word,
     kind = vim.lsp.protocol.CompletionItemKind.Text,
-    -- filterText: use provided filter_text or fall back to kana
-    filterText = filter_text or kana,
+    -- filterText: use provided filter_text or fall back to the midashi
+    filterText = filter_text or item.midasi,
     -- Use textEdit to replace the entire pre-edit text (including ▽)
     textEdit = {
-      newText = label,
+      newText = item.word,
       range = text_edit_range,
     },
-    -- sortText for ranking
-    sortText = string.format("%010d", 1000000000 - rank),
+    -- skkeleton hands the items over already ordered (completion ranks first,
+    -- then the dictionary order, then the okuriari candidates), so the position
+    -- in that list is the sort key.
+    sortText = string.format("%010d", index),
     data = {
       skkeleton = true,
-      kana = kana,
-      word = word,
-      rank = rank,
+      kana = item.midasi,
+      word = item.candidate,
+      henkan_type = item.henkan_type,
     },
   }
 
-  if info ~= "" then
-    item.documentation = {
+  if item.info ~= "" then
+    completion_item.documentation = {
       kind = "plaintext",
-      value = info,
+      value = item.info,
     }
   end
 
-  return item
+  return completion_item
 end
 
---- Build completion items from candidates
---- @param candidates any[]
---- @param ranks table<string, number>
+--- Build completion items from skkeleton's complete items
+--- @param items blink-cmp-skkeleton.CompleteItem[]
 --- @param text_edit_range table
 --- @param filter_text string|nil Filter text for blink.cmp matching
 --- @return blink.cmp.CompletionItem[]
-function M.build_completion_items(candidates, ranks, text_edit_range, filter_text)
-  -- Sort candidates by kana (reading)
-  table.sort(candidates, function(a, b)
-    return a[1] < b[1]
-  end)
+function M.build_completion_items(items, text_edit_range, filter_text)
+  local completion_items = {}
 
-  -- グローバル辞書由来の候補はユーザー辞書の末尾より配置する
-  -- 辞書順に並べるため先頭から順に負の方向にランクを振っていく
-  local globalRank = -1
-  local items = {}
-
-  for _, cand in ipairs(candidates) do
-    local kana = cand[1]
-
-    for _, word in ipairs(cand[2]) do
-      local rank = ranks[word] or globalRank
-      if not ranks[word] then
-        globalRank = globalRank - 1
-      end
-
-      local item = M.build_completion_item(kana, word, rank, text_edit_range, filter_text)
-      table.insert(items, item)
-    end
+  for index, item in ipairs(items) do
+    table.insert(completion_items, M.build_completion_item(item, index, text_edit_range, filter_text))
   end
 
-  -- Sort by rank (same as ddc implementation)
-  table.sort(items, function(a, b)
-    return a.data.rank > b.data.rank
-  end)
-
-  return items
+  return completion_items
 end
 
 return M

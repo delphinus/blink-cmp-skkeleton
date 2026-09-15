@@ -194,6 +194,25 @@ T["commit"]["passes okuriari readings through as okuriari"] = function()
   end)
 end
 
+T["commit"]["uses the henkan type the item carries"] = function()
+  -- 送りありの見出し "あたr" は見ただけでは送りなしの読みと区別が付かないので、
+  -- 候補が持っている種別を使わないと送りなしとして学習してしまう
+  with_captured_registration(function(calls)
+    local item = skk_item("あたr", "当た")
+    item.data.henkan_type = "okuriari"
+    item.label = "当たり"
+    item.textEdit = { newText = "当たり" }
+    select_with_preview(item)
+    expect.equality(autoconfirm.on_hide(), true)
+    flush()
+    expect.equality(#calls, 1)
+    expect.equality(calls[1].kana, "あたr")
+    expect.equality(calls[1].word, "当た")
+    expect.equality(calls[1].henkan_type, "okuriari")
+    expect.equality(calls[1].inserted, "当たり")
+  end)
+end
+
 T["commit"]["registers the dictionary entry, not the displayed label"] = function()
   -- Annotated entries show only the part before the ';', but skkeleton has to
   -- be handed the whole entry back
