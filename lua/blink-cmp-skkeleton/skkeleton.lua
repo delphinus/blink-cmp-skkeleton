@@ -8,6 +8,8 @@
 --- @field midasi string midashi the candidate was looked up under
 --- @field candidate string raw candidate, annotation included
 --- @field henkan_type "okurinasi"|"okuriari"
+--- @field rank integer|nil skkeleton's completion rank, nil when the candidate
+---   has never been confirmed under this reading
 
 local utils = require("blink-cmp-skkeleton.utils")
 local cache_module = require("blink-cmp-skkeleton.cache")
@@ -117,6 +119,44 @@ local function decode_items(raw_items)
     local item = decode_item(raw)
     if item then
       table.insert(items, item)
+    end
+  end
+  return items
+end
+
+--- Carry skkeleton's completion ranks over to the okurinasi items.
+---
+--- getRanks returns the [candidate, rank] pairs skkeleton knows for the reading
+--- currently being converted. A candidate only has a rank once it has been
+--- confirmed at least once (the number is its position in the rank file, or the
+--- timestamp of a confirmation made in this session), so the rank doubles as
+--- "this one has been learned". skkeleton has already applied these ranks to
+--- the order it hands over, and nothing here reorders the list. They ride along
+--- for a consumer that regroups the items and has to keep the learned ones on
+--- top: with only the position in the list to go by, a learned candidate whose
+--- midashi is longer than the reading ("とうろ" -> "とうろく /登録/") cannot be
+--- told apart from an unlearned one.
+---
+--- Okuriari items are left alone. skkeleton ranks the okurinasi candidates only
+--- (getRanks looks the reading up in the user dictionary's okurinasi entries),
+--- and an okuriari candidate that happens to be spelled like a ranked okurinasi
+--- one would otherwise pick up a rank it was never given.
+--- @param items blink-cmp-skkeleton.CompleteItem[]
+--- @param raw_ranks any as returned by getRanks
+--- @return blink-cmp-skkeleton.CompleteItem[] items the same list, ranks filled in
+local function attach_ranks(items, raw_ranks)
+  if type(raw_ranks) ~= "table" then
+    return items
+  end
+  local ranks = {}
+  for _, entry in ipairs(raw_ranks) do
+    if type(entry) == "table" and type(entry[1]) == "string" and type(entry[2]) == "number" then
+      ranks[entry[1]] = entry[2]
+    end
+  end
+  for _, item in ipairs(items) do
+    if item.henkan_type ~= "okuriari" then
+      item.rank = ranks[item.candidate]
     end
   end
   return items
@@ -286,7 +326,19 @@ function M.get_complete_items_async(callback, should_cancel)
         if should_cancel() then
           return bail()
         end
-        finalize(decode_items(raw_items or {}))
+        local items = decode_items(raw_items or {})
+        -- The ranks are read in the same window the prefix is bracketed by, so
+        -- the getPrefix re-check in finalize() covers them too. A skkeleton
+        -- without the getRanks dispatcher (or a failed RPC) simply leaves every
+        -- item unranked instead of dropping the whole result.
+        request_async("getRanks", function(raw_ranks)
+          if should_cancel() then
+            return bail()
+          end
+          finalize(attach_ranks(items, raw_ranks))
+        end, function()
+          finalize(items)
+        end)
       end, function()
         callback({}, pre_edit)
       end)

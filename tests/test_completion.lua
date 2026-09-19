@@ -19,13 +19,15 @@ local text_edit_range = {
 --- @param candidate string raw candidate, annotation included
 --- @param henkan_type? "okurinasi"|"okuriari" defaults to "okurinasi"
 --- @param info? string annotation
-local function complete_item(word, midasi, candidate, henkan_type, info)
+--- @param rank? integer completion rank, nil when the candidate is unlearned
+local function complete_item(word, midasi, candidate, henkan_type, info, rank)
   return {
     word = word,
     info = info or "",
     midasi = midasi,
     candidate = candidate,
     henkan_type = henkan_type or "okurinasi",
+    rank = rank,
   }
 end
 
@@ -74,6 +76,18 @@ T["build_completion_item"]["inserts the okurigana with an okuriari candidate"] =
   expect.equality(item.data.kana, "あたr")
   expect.equality(item.data.word, "当た")
   expect.equality(item.data.henkan_type, "okuriari")
+end
+
+T["build_completion_item"]["carries the completion rank into data"] = function()
+  local ranked = completion.build_completion_item(
+    complete_item("登録", "とうろく", "登録", nil, nil, 4089),
+    1,
+    text_edit_range
+  )
+  local unranked = completion.build_completion_item(complete_item("塘路", "とうろ", "塘路"), 2, text_edit_range)
+
+  expect.equality(ranked.data.rank, 4089)
+  expect.equality(unranked.data.rank, nil)
 end
 
 -- build_completion_items tests

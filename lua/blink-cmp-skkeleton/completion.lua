@@ -29,6 +29,11 @@ function M.build_completion_item(item, index, text_edit_range, filter_text)
       kana = item.midasi,
       word = item.candidate,
       henkan_type = item.henkan_type,
+      -- Set only for a candidate that has been confirmed before. Nothing here
+      -- reads it back -- skkeleton's order already has the ranks applied -- but
+      -- a blink.cmp config that regroups the list needs it to tell a learned
+      -- candidate from one that has never been confirmed.
+      rank = item.rank,
     },
   }
 
