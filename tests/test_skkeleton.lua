@@ -211,6 +211,118 @@ T["get_complete_items_async"]["returns okuriari items alongside okurinasi ones"]
   skkeleton.clear_cache()
 end
 
+T["get_complete_items_async"]["fills in the ranks getRanks reports"] = function()
+  skkeleton.clear_cache()
+  local old_fn = vim.fn
+  vim.fn = mock_async(old_fn, {
+    getPreEdit = "▽とうろ",
+    getCompleteItems = {
+      -- 見出しが読みより長い学習済みの候補。読みと完全一致する候補より上に
+      -- 置きたい側なので、ランクが付いていることが分かる必要がある
+      raw_item("登録", "とうろく", "登録"),
+      raw_item("当路", "とうろ", "当路"),
+      raw_item("塘路", "とうろ", "塘路"),
+    },
+    getRanks = { { "登録", 4089 }, { "当路", 3991 } },
+  })
+
+  local result
+  skkeleton.get_complete_items_async(function(items)
+    result = items
+  end)
+
+  expect.equality(#result, 3)
+  expect.equality(result[1].rank, 4089)
+  expect.equality(result[2].rank, 3991)
+  expect.equality(result[3].rank, nil)
+
+  vim.fn = old_fn
+  skkeleton.clear_cache()
+end
+
+T["get_complete_items_async"]["ranks the annotated candidate by its raw form"] = function()
+  skkeleton.clear_cache()
+  local old_fn = vim.fn
+  -- skkeleton のランクは注釈込みの候補文字列で引かれている
+  vim.fn = mock_async(old_fn, {
+    getPreEdit = "▽あい",
+    getCompleteItems = { raw_item("藍", "あい", "藍;indigo", "okurinasi", "indigo") },
+    getRanks = { { "藍;indigo", 12 } },
+  })
+
+  local result
+  skkeleton.get_complete_items_async(function(items)
+    result = items
+  end)
+
+  expect.equality(result[1].rank, 12)
+
+  vim.fn = old_fn
+  skkeleton.clear_cache()
+end
+
+T["get_complete_items_async"]["leaves okuriari items unranked"] = function()
+  skkeleton.clear_cache()
+  local old_fn = vim.fn
+  -- skkeleton が返すランクは送りなしの候補のものだけ。同じ表記の送りあり候補が
+  -- 拾ってしまわないこと
+  vim.fn = mock_async(old_fn, {
+    getPreEdit = "▽あたり",
+    getCompleteItems = {
+      raw_item("当たり", "あたり", "当たり"),
+      raw_item("当たり", "あたr", "当た", "okuriari"),
+    },
+    getRanks = { { "当たり", 7 } },
+  })
+
+  local result
+  skkeleton.get_complete_items_async(function(items)
+    result = items
+  end)
+
+  expect.equality(result[1].rank, 7)
+  expect.equality(result[2].rank, nil)
+
+  vim.fn = old_fn
+  skkeleton.clear_cache()
+end
+
+T["get_complete_items_async"]["keeps the items when getRanks is unavailable"] = function()
+  skkeleton.clear_cache()
+  local old_fn = vim.fn
+  -- getRanks を持たない skkeleton でも候補は出す (ランクが付かないだけ)
+  vim.fn = setmetatable({}, {
+    __index = function(_, k)
+      if k == "denops#request_async" then
+        return function(_plugin, method, _args, success, failure)
+          if method == "getPrefix" then
+            success("あい")
+          elseif method == "getPreEdit" then
+            success("▽あい")
+          elseif method == "getCompleteItems" then
+            success({ raw_item("愛", "あい", "愛") })
+          else
+            failure("unknown method")
+          end
+        end
+      end
+      return old_fn[k]
+    end,
+  })
+
+  local result
+  skkeleton.get_complete_items_async(function(items)
+    result = items
+  end)
+
+  expect.equality(#result, 1)
+  expect.equality(result[1].word, "愛")
+  expect.equality(result[1].rank, nil)
+
+  vim.fn = old_fn
+  skkeleton.clear_cache()
+end
+
 T["get_complete_items_async"]["drops items with unusable user_data"] = function()
   skkeleton.clear_cache()
   local old_fn = vim.fn
@@ -280,10 +392,10 @@ T["get_complete_items_async"]["caches result for same pre_edit"] = function()
   }, counter)
 
   -- First call: cache miss
-  -- (getPrefix + getPreEdit + getCompleteItems + getPrefix re-check)
+  -- (getPrefix + getPreEdit + getCompleteItems + getRanks + getPrefix re-check)
   counter.count = 0
   skkeleton.get_complete_items_async(function() end)
-  expect.equality(counter.count, 4)
+  expect.equality(counter.count, 5)
 
   -- Second call: cache hit (getPrefix + getPreEdit to check the key)
   counter.count = 0
@@ -355,7 +467,7 @@ T["get_complete_items_async"]["clears cache after register_completion"] = functi
   -- Populate cache
   counter.count = 0
   skkeleton.get_complete_items_async(function() end)
-  expect.equality(counter.count, 4)
+  expect.equality(counter.count, 5)
 
   -- Verify cache works
   counter.count = 0
@@ -368,7 +480,7 @@ T["get_complete_items_async"]["clears cache after register_completion"] = functi
   -- Next call should be cache miss
   counter.count = 0
   skkeleton.get_complete_items_async(function() end)
-  expect.equality(counter.count, 4) -- cache was cleared
+  expect.equality(counter.count, 5) -- cache was cleared
 
   vim.fn = old_fn
   skkeleton.clear_cache()
@@ -657,7 +769,7 @@ T["cache TTL boundary"]["invalidates at exact TTL boundary"] = function()
   skkeleton.clear_cache()
   counter.count = 0
   skkeleton.get_complete_items_async(function() end)
-  expect.equality(counter.count, 4) -- miss: full fetch + prefix re-check
+  expect.equality(counter.count, 5) -- miss: full fetch + prefix re-check
 
   -- At t=99 (just before 100ms TTL) - should be cache hit
   current_time = 99
@@ -669,7 +781,7 @@ T["cache TTL boundary"]["invalidates at exact TTL boundary"] = function()
   current_time = 100
   counter.count = 0
   skkeleton.get_complete_items_async(function() end)
-  expect.equality(counter.count, 4) -- miss: full fetch
+  expect.equality(counter.count, 5) -- miss: full fetch
 
   vim.fn = old_fn
   vim.loop = old_loop
@@ -698,7 +810,7 @@ T["cache TTL boundary"]["just before TTL is cache hit"] = function()
   skkeleton.clear_cache()
   counter.count = 0
   skkeleton.get_complete_items_async(function() end)
-  expect.equality(counter.count, 4) -- miss
+  expect.equality(counter.count, 5) -- miss
 
   -- At t=50 (half of 100ms TTL) - should be cache hit
   current_time = 50

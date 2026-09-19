@@ -225,6 +225,8 @@ T["get_completions"]["builds completion items correctly"] = function()
               raw_item("愛", "あい", "愛"),
               raw_item("藍", "あい", "藍;indigo", "okurinasi", "indigo"),
             })
+          elseif method == "getRanks" then
+            success({ { "愛", 3 } })
           elseif method == "getPreEdit" then
             success("▽あい")
           elseif method == "getPrefix" then
@@ -262,6 +264,9 @@ T["get_completions"]["builds completion items correctly"] = function()
   expect.equality(items[1].filterText, "あい")
   expect.equality(items[2].label, "藍")
   expect.no_equality(items[2].documentation, nil)
+  -- 学習済みの候補だけ data.rank を持つ
+  expect.equality(items[1].data.rank, 3)
+  expect.equality(items[2].data.rank, nil)
 
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "" })
   vim.fn = old_fn
@@ -286,6 +291,8 @@ T["get_completions"]["offers okuriari candidates"] = function()
               raw_item("辺り", "あたり", "辺り"),
               raw_item("当たり", "あたr", "当た", "okuriari"),
             })
+          elseif method == "getRanks" then
+            success({ { "辺り", 9 } })
           elseif method == "getPreEdit" then
             success("▽あたり")
           elseif method == "getPrefix" then
@@ -321,6 +328,9 @@ T["get_completions"]["offers okuriari candidates"] = function()
   expect.equality(items[2].data.kana, "あたr")
   expect.equality(items[2].data.word, "当た")
   expect.equality(items[2].data.henkan_type, "okuriari")
+  -- ランクが付くのは送りなしの側だけ
+  expect.equality(items[1].data.rank, 9)
+  expect.equality(items[2].data.rank, nil)
 
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "" })
   vim.fn = old_fn
