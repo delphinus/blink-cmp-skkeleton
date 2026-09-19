@@ -84,4 +84,55 @@ T["safe_call"]["passes arguments to function"] = function()
   expect.equality(result, 5)
 end
 
+-- debug_log tests
+T["debug_log"] = new_set()
+
+--- Call debug_log with blink_cmp_skkeleton_debug_file pointed at a temporary
+--- path, then return what landed there.
+--- @param msgs string[]
+--- @return string[]
+local function log_lines(msgs)
+  local path = vim.fn.tempname()
+  local old_g = vim.g.blink_cmp_skkeleton_debug_file
+  vim.g.blink_cmp_skkeleton_debug_file = path
+  for _, msg in ipairs(msgs) do
+    utils.debug_log(msg)
+  end
+  vim.g.blink_cmp_skkeleton_debug_file = old_g
+  local lines = vim.fn.filereadable(path) == 1 and vim.fn.readfile(path) or {}
+  vim.fn.delete(path)
+  return lines
+end
+
+T["debug_log"]["writes nothing without a debug file"] = function()
+  local old_g = vim.g.blink_cmp_skkeleton_debug_file
+  vim.g.blink_cmp_skkeleton_debug_file = nil
+  -- Only has to stay quiet; a throw here would fail the test
+  utils.debug_log("no destination")
+  vim.g.blink_cmp_skkeleton_debug_file = old_g
+end
+
+T["debug_log"]["appends the message to the debug file"] = function()
+  local lines = log_lines({ "first", "second" })
+  expect.equality(#lines, 2)
+  expect.equality(lines[1]:match("first") ~= nil, true)
+  expect.equality(lines[2]:match("second") ~= nil, true)
+end
+
+T["debug_log"]["prefixes each line with a time and the pid"] = function()
+  local lines = log_lines({ "tagged" })
+  expect.equality(#lines, 1)
+  local time, pid = lines[1]:match("^(%d%d:%d%d:%d%d) %[(%d+)%] tagged$")
+  expect.equality(time ~= nil, true)
+  expect.equality(tonumber(pid), vim.fn.getpid())
+end
+
+T["debug_log"]["follows a changed debug file path"] = function()
+  local first = log_lines({ "to the first file" })
+  local second = log_lines({ "to the second file" })
+  expect.equality(#first, 1)
+  expect.equality(#second, 1)
+  expect.equality(second[1]:match("to the first file"), nil)
+end
+
 return T
